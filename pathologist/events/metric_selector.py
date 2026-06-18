@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from pathologist.schemas.common import EventProposalSource, TimeWindow
 from pathologist.schemas.key_event import KeyEventProposal
@@ -413,7 +414,7 @@ def _local_metric_context(
         if _time_windows_overlap(event.time_window, context_start_sec, context_end_sec)
     ]
 
-    metadata = dict(metric.metadata)
+    metadata = _local_metric_metadata(metric.metadata, context_start_sec, context_end_sec)
     metadata.update(
         {
             "local_context_window": {
@@ -441,6 +442,63 @@ def _local_metric_context(
         display_hint=metric.display_hint,
         metadata=metadata,
     )
+
+
+def _local_metric_metadata(
+    metadata: dict[str, Any],
+    context_start_sec: float,
+    context_end_sec: float,
+) -> dict[str, Any]:
+    """Copy metric metadata, trimming timestamped/windowed debug lists locally."""
+
+    local_metadata: dict[str, Any] = {}
+    for key, value in metadata.items():
+        trimmed_value = _trim_windowed_metadata_list(value, context_start_sec, context_end_sec)
+        if trimmed_value is None:
+            local_metadata[key] = value
+            continue
+
+        local_metadata[key] = trimmed_value
+        local_metadata[f"original_{key}_count"] = len(value)
+        local_metadata[f"local_{key}_count"] = len(trimmed_value)
+    return local_metadata
+
+
+def _trim_windowed_metadata_list(
+    value: Any,
+    context_start_sec: float,
+    context_end_sec: float,
+) -> list[dict[str, Any]] | None:
+    """Trim metadata lists whose items have start/end or timestamp fields."""
+
+    if not isinstance(value, list) or not value:
+        return None
+    if not all(isinstance(item, dict) for item in value):
+        return None
+
+    local_items: list[dict[str, Any]] = []
+    for item in value:
+        item_start_sec = _metadata_item_start_sec(item)
+        if item_start_sec is None:
+            return None
+        item_end_sec = _metadata_item_end_sec(item, item_start_sec)
+        if item_start_sec <= context_end_sec and item_end_sec >= context_start_sec:
+            local_items.append(item)
+    return local_items
+
+
+def _metadata_item_start_sec(item: dict[str, Any]) -> float | None:
+    value = item.get("start_sec", item.get("timestamp_sec"))
+    if value is None:
+        return None
+    return float(value)
+
+
+def _metadata_item_end_sec(item: dict[str, Any], fallback_start_sec: float) -> float:
+    value = item.get("end_sec")
+    if value is None:
+        return fallback_start_sec
+    return float(value)
 
 
 def _metric_sample_timestep(metric: MetricResult) -> float:

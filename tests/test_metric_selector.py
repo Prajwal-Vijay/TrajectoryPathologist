@@ -48,6 +48,13 @@ def test_metric_selector_fuses_overlapping_metric_events(tmp_path: Path | None =
             MetricResult(
                 name="gripper_chatter",
                 description="gripper chatter",
+                metadata={
+                    "chatter_bins": [
+                        {"start_sec": 9.0, "end_sec": 9.5, "transition_count": 1},
+                        {"start_sec": 10.05, "end_sec": 10.15, "transition_count": 3},
+                        {"start_sec": 10.25, "end_sec": 10.30, "transition_count": 2},
+                    ],
+                },
                 events=[
                     MetricEvent(
                         metric_name="gripper_chatter",
@@ -119,6 +126,12 @@ def test_metric_selector_fuses_overlapping_metric_events(tmp_path: Path | None =
     assert [sample.timestamp_sec for sample in motion_packet.samples] == [10.0, 10.5]
     assert motion_packet.metadata["original_sample_count"] == 5
     assert motion_packet.metadata["local_sample_count"] == 2
+    gripper_packet = next(packet for packet in proposals[0].metric_packet if packet.name == "gripper_chatter")
+    assert gripper_packet.metadata["chatter_bins"] == [
+        {"start_sec": 10.05, "end_sec": 10.15, "transition_count": 3}
+    ]
+    assert gripper_packet.metadata["original_chatter_bins_count"] == 3
+    assert gripper_packet.metadata["local_chatter_bins_count"] == 1
 
     payload = json.loads(debug_path.read_text(encoding="utf-8"))
     assert payload["bundle_id"] == "demo"
