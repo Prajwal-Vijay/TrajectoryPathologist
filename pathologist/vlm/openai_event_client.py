@@ -31,10 +31,51 @@ class OpenAIEventLabelClient:
         self.timeout_sec = timeout_sec
         self.max_output_tokens = max_output_tokens
 
-    def label_event(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Call OpenAI and return the parsed structured event label."""
+    def label_visual_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Call OpenAI for visual-only event interpretation."""
 
-        request_body = self._build_request_body(payload)
+        return self._call_structured(
+            payload=payload,
+            schema_name="trajectory_visual_event_label",
+            schema=_visual_event_json_schema(),
+            include_images=True,
+        )
+
+    def integrate_event_evidence(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Call OpenAI to integrate visual labels and metric grounding cards."""
+
+        return self._call_structured(
+            payload=payload,
+            schema_name="trajectory_key_event_label",
+            schema=_event_label_json_schema(),
+            include_images=False,
+        )
+
+    def label_event(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Backward-compatible single-stage label call."""
+        ''' THis is the old version '''
+        return self._call_structured(
+            payload=payload,
+            schema_name="trajectory_key_event_label",
+            schema=_event_label_json_schema(),
+            include_images=True,
+        )
+
+    def _call_structured(
+        self,
+        payload: dict[str, Any],
+        schema_name: str,
+        schema: dict[str, Any],
+        include_images: bool,
+    ) -> dict[str, Any]:
+        """Call OpenAI and return parsed JSON matching the provided schema."""
+
+        request_body = self._build_request_body(
+            payload,
+            schema_name=schema_name,
+            schema=schema,
+            include_images=include_images,
+        )
         request = urllib.request.Request(
             self.api_url,
             data=json.dumps(request_body).encode("utf-8"),
@@ -57,7 +98,13 @@ class OpenAIEventLabelClient:
         except json.JSONDecodeError as exc:
             raise ValueError(f"OpenAI event labelling response was not valid JSON: {output_text}") from exc
 
-    def _build_request_body(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def _build_request_body(
+        self,
+        payload: dict[str, Any],
+        schema_name: str = "trajectory_key_event_label",
+        schema: dict[str, Any] | None = None,
+        include_images: bool = True,
+    ) -> dict[str, Any]:
         content: list[dict[str, Any]] = [
             {
                 "type": "input_text",
@@ -67,7 +114,8 @@ class OpenAIEventLabelClient:
                 ),
             }
         ]
-        content.extend(_image_inputs_from_payload(payload))
+        if include_images:
+            content.extend(_image_inputs_from_payload(payload))
         return {
             "model": self.model,
             "input": [
@@ -79,9 +127,9 @@ class OpenAIEventLabelClient:
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "name": "trajectory_key_event_label",
+                    "name": schema_name,
                     "strict": True,
-                    "schema": _event_label_json_schema(),
+                    "schema": schema or _event_label_json_schema(),
                 }
             },
             "max_output_tokens": self.max_output_tokens,
@@ -167,6 +215,42 @@ def _event_label_json_schema() -> dict[str, Any]:
             "metric_evidence_ids",
             "visual_evidence_ids",
             "explanation",
+            "uncertainty_notes",
+        ],
+    }
+
+
+def _visual_event_json_schema() -> dict[str, Any]:
+    string_array = {
+        "type": "array",
+        "items": {"type": "string"},
+    }
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "visual_observation": {"type": "string"},
+            "phase": {"type": "string"},
+            "event_type": {"type": "string"},
+            "objects_involved": string_array,
+            "contact_or_grasp_state": {"type": "string"},
+            "progress_assessment": {
+                "type": "string",
+                "enum": ["progress", "regression", "no_progress", "recovery", "uncertain"],
+            },
+            "visible_pathology_labels": string_array,
+            "visual_evidence_ids": string_array,
+            "uncertainty_notes": string_array,
+        },
+        "required": [
+            "visual_observation",
+            "phase",
+            "event_type",
+            "objects_involved",
+            "contact_or_grasp_state",
+            "progress_assessment",
+            "visible_pathology_labels",
+            "visual_evidence_ids",
             "uncertainty_notes",
         ],
     }

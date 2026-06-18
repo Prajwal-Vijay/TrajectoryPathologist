@@ -18,7 +18,13 @@ from pathologist.schemas.common import (
     ThresholdOperator,
     TimeWindow,
 )
-from pathologist.schemas.key_event import KeyEvent, KeyEventLabel, KeyEventProposal
+from pathologist.schemas.key_event import (
+    KeyEvent,
+    KeyEventLabel,
+    KeyEventProposal,
+    MetricGroundingCard,
+    VisualEventLabel,
+)
 from pathologist.schemas.metrics import MetricEvent, MetricProfile, MetricResult, MetricSample
 from pathologist.schemas.task_contract import FailureCase, TaskContract
 from pathologist.schemas.trajectory_bundle import (
@@ -39,6 +45,7 @@ __all__ = [
     "KeyEvent",
     "KeyEventLabel",
     "KeyEventProposal",
+    "MetricGroundingCard",
     "MetricEvent",
     "MetricProfile",
     "MetricResult",
@@ -61,4 +68,5 @@ __all__ = [
     "TimeWindow",
     "TrajectoryBundle",
     "TrajectoryReport",
+    "VisualEventLabel",
 ]

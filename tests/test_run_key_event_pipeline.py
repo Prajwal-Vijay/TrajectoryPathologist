@@ -10,17 +10,31 @@ from pathologist.schemas import TaskContract
 
 
 class FakeEventLabelClient:
-    def label_event(self, payload):
+    def label_visual_event(self, payload):
         return {
+            "visual_observation": "The handle appears grasped in the sampled frames.",
             "phase": "grasp",
-            "event_type": "instability",
+            "event_type": "visible_grasp",
             "objects_involved": ["handle"],
-            "contact_or_grasp_state": "uncertain",
-            "progress_assessment": "regression",
-            "pathology_labels": ["instability"],
+            "contact_or_grasp_state": "handle appears grasped",
+            "progress_assessment": "progress",
+            "visible_pathology_labels": [],
+            "visual_evidence_ids": ["frame_000"],
+            "uncertainty_notes": [],
+        }
+
+    def integrate_event_evidence(self, payload):
+        return {
+            "visual_observation": "The handle appears grasped in the sampled frames.",
+            "phase": "grasp",
+            "event_type": "grasp_with_metric_anomaly",
+            "objects_involved": ["handle"],
+            "contact_or_grasp_state": "handle appears grasped",
+            "progress_assessment": "progress",
+            "pathology_labels": ["metric_anomaly"],
             "metric_evidence_ids": ["metric_event_000"],
             "visual_evidence_ids": ["frame_000"],
-            "explanation": "Metrics and sampled frames suggest an unstable grasp event.",
+            "explanation": "Visual evidence shows a grasp while metric cards mark the event for review.",
             "uncertainty_notes": [],
         }
 
@@ -54,12 +68,20 @@ def test_run_key_event_pipeline_writes_outputs(tmp_path: Path) -> None:
     assert Path(summary["timeline_debug_path"]).exists()
     assert Path(summary["proposals_path"]).exists()
     assert Path(summary["key_events_path"]).exists()
+    assert Path(summary["visual_event_labels_path"]).exists()
+    assert Path(summary["metric_grounding_cards_path"]).exists()
 
     proposals = json.loads(Path(summary["proposals_path"]).read_text(encoding="utf-8"))
     key_events = json.loads(Path(summary["key_events_path"]).read_text(encoding="utf-8"))
+    visual_event_labels = json.loads(Path(summary["visual_event_labels_path"]).read_text(encoding="utf-8"))
+    metric_grounding_cards = json.loads(Path(summary["metric_grounding_cards_path"]).read_text(encoding="utf-8"))
     assert proposals
     assert key_events
-    assert key_events[0]["label"]["event_type"] == "instability"
+    assert visual_event_labels
+    assert metric_grounding_cards
+    assert key_events[0]["label"]["event_type"] == "grasp_with_metric_anomaly"
+    assert "visual_label" in key_events[0]["label"]["metadata"]
+    assert "metric_grounding_cards" in key_events[0]["label"]["metadata"]
     assert Path(summary["effective_config_path"]).exists()
 
 

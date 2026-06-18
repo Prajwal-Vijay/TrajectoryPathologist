@@ -101,6 +101,39 @@ def run_key_event_pipeline(
         json.dumps([key_event.to_dict() for key_event in labeled_key_events], indent=2),
         encoding="utf-8",
     )
+    visual_event_labels_path = output_path / "visual_event_labels.json"
+    visual_event_labels_path.write_text(
+        json.dumps(
+            [
+                {
+                    "event_id": key_event.proposal.event_id,
+                    "visual_label": key_event.label.metadata.get("visual_label") if key_event.label else None,
+                    "raw_visual_response": key_event.label.metadata.get("raw_visual_response") if key_event.label else None,
+                }
+                for key_event in labeled_key_events
+            ],
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    metric_grounding_cards_path = output_path / "metric_grounding_cards.json"
+    metric_grounding_cards_path.write_text(
+        json.dumps(
+            [
+                {
+                    "event_id": key_event.proposal.event_id,
+                    "metric_grounding_cards": (
+                        key_event.label.metadata.get("metric_grounding_cards")
+                        if key_event.label
+                        else []
+                    ),
+                }
+                for key_event in labeled_key_events
+            ],
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
 
     task_contract_path_out = output_path / "task_contract.json"
     task_contract_path_out.write_text(
@@ -120,6 +153,8 @@ def run_key_event_pipeline(
         "timeline_debug_path": str(debug_timeline_path),
         "proposals_path": str(proposals_path),
         "key_events_path": str(labeled_key_events_path),
+        "visual_event_labels_path": str(visual_event_labels_path),
+        "metric_grounding_cards_path": str(metric_grounding_cards_path),
         "task_contract_path": str(task_contract_path_out),
         "effective_config_path": str(effective_config_path),
     }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from pathologist.schemas.common import (
     EventProposalSource,
@@ -14,6 +15,47 @@ from pathologist.schemas.common import (
 )
 from pathologist.schemas.metrics import MetricEvent, MetricResult
 from pathologist.schemas.trajectory_bundle import CameraFrameRef
+
+
+@dataclass(slots=True)
+class VisualEventLabel(SchemaBase):
+    """Visual-only interpretation of a selected key-event window."""
+
+    event_id: str = ""
+    visual_observation: str = ""
+    phase: str | None = None
+    event_type: str | None = None
+    objects_involved: list[str] = field(default_factory=list)
+    contact_or_grasp_state: str | None = None
+    progress_assessment: ProgressAssessment | str | None = None
+    visible_pathology_labels: list[str] = field(default_factory=list)
+    visual_evidence_ids: list[str] = field(default_factory=list)
+    uncertainty_notes: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        require_non_empty(self.event_id, "VisualEventLabel.event_id")
+        require_non_empty(self.visual_observation, "VisualEventLabel.visual_observation")
+
+
+@dataclass(slots=True)
+class MetricGroundingCard(SchemaBase):
+    """Deterministic numeric grounding for one metric-triggered event."""
+
+    evidence_id: str = ""
+    metric_name: str = ""
+    time_window: TimeWindow | None = None
+    observed_value: Any = None
+    severity: str | None = None
+    threshold_context: dict[str, Any] = field(default_factory=dict)
+    relative_level: str = ""
+    metric_interpretation: str = ""
+    allowed_metric_claims: list[str] = field(default_factory=list)
+    forbidden_semantic_claims: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        require_non_empty(self.evidence_id, "MetricGroundingCard.evidence_id")
+        require_non_empty(self.metric_name, "MetricGroundingCard.metric_name")
+        require_non_empty(self.relative_level, "MetricGroundingCard.relative_level")
 
 
 @dataclass(slots=True)

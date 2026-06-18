@@ -35,3 +35,21 @@ def test_openai_event_client_builds_responses_request() -> None:
         "explanation",
         "uncertainty_notes",
     ]
+
+
+def test_openai_event_client_builds_visual_schema_request() -> None:
+    client = OpenAIEventLabelClient(api_key="test-key", model="test-model")
+    request_body = client._build_request_body(
+        {"instructions": "label visual event", "visual_evidence": []},
+        schema_name="trajectory_visual_event_label",
+        schema={
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"visual_observation": {"type": "string"}},
+            "required": ["visual_observation"],
+        },
+        include_images=True,
+    )
+
+    assert request_body["text"]["format"]["schema"]["required"] == ["visual_observation"]
+    assert request_body["text"]["format"]["name"] == "trajectory_visual_event_label"
