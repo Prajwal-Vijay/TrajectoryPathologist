@@ -1,0 +1,57 @@
+{
+  "metrics": {
+    "max_events_per_metric": 20,
+    "timestamp_regularity": {
+      "gap_mad_multiplier": 3.0,
+      "gap_median_multiplier": 1.0,
+      "high_gap_multiplier": 2.0
+    },
+    "action_range_saturation": {
+      "saturation_tolerance": 1e-6,
+      "low_fraction": 0.01,
+      "medium_fraction": 0.05,
+      "high_fraction": 0.15
+    },
+    "action_distribution_entropy": {
+      "entropy_bins": 10,
+      "low_entropy_threshold": 0.15,
+      "high_entropy_threshold": 0.95
+    },
+    "motion_smoothness": {
+      "medium_percentile": 95,
+      "high_percentile": 99,
+      "robust_medium_mad_multiplier": 3.0,
+      "robust_high_mad_multiplier": 6.0,
+      "max_tolerable_jerk": 0.05,
+      "numerical_zero_jerk_norm": 1e-9,
+      "min_jerk_norm": 0.0
+    },
+    "stalling": {
+      "speed_percentile": 10,
+      "speed_median_fraction": 0.05,
+      "low_fraction": 0.10,
+      "medium_fraction": 0.20,
+      "high_fraction": 0.40
+    },
+    "gripper_chatter": {
+      "gripper_binary_threshold": 0.5,
+      "chatter_bin_steps": 10,
+      "min_chatter_rate": 2.0,
+      "min_chatter_transitions": 2,
+      "medium_percentile": 95,
+      "high_percentile": 99
+    }
+  },
+  "selector": {
+    "point_event_delta_sec": 0.2,
+    "frame_stride_within_window": 10,
+    "metric_packet_context_steps": 10,
+    "ignored_metric_names": [
+      "timestamp_regularity"
+    ]
+  },
+  "labeling": {
+    "max_events_to_label": 8,
+    "openai_model": null
+  }
+}

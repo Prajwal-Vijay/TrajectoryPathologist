@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pathologist.metrics.base import MetricComputationContext
+from pathologist.metrics.base import MetricComputationContext, metric_config, metric_option
 from pathologist.metrics.helpers import (
     align_timestamps,
     extract_vector_series,
@@ -47,7 +47,8 @@ class GripperChatterMetric:
                 metadata={"available": False, "unavailable_reason": "requires at least two gripper samples"},
             )
 
-        threshold_value = float(stream.metadata.get("gripper_binary_threshold", 0.5))
+        config = metric_config(context, self.name)
+        threshold_value = float(metric_option(config, stream.metadata, "gripper_binary_threshold", 0.5))
         binary = [
             [1 if value >= threshold_value else 0 for value in sample]
             for sample in grippers # Sample means one sample timestep
@@ -70,71 +71,74 @@ class GripperChatterMetric:
         duration = max(timestamps[-1] - timestamps[0], 0.0)
         transitions_per_sec = total_transitions / duration if duration > 0 else 0.0
         
-        window_radius_steps = int(stream.metadata.get("chatter_window_radius_steps", 5))
-        local_rates = _local_transition_rates(transitions, transition_timestamps, window_radius_steps)
-        local_rate_values = [rate for _, _, _, rate in local_rates]
+        sample_timestamps = align_timestamps(timestamps, len(binary))
+        bin_steps = int(metric_option(config, stream.metadata, "chatter_bin_steps", 10))
+        chatter_bins = _transition_bins(transitions, sample_timestamps, bin_steps)
+        bin_rate_values = [rate for _, _, _, rate in chatter_bins]
         
-        """
-        # Define an absolute minimum heuristic threshold to prevent false positives 
-        # on completely normal trajectories where the "worst" part is still fine.
-        NOTE
-        Still maybe we need to take someother p
-        """
-        min_chatter_rate = float(stream.metadata.get("min_chatter_rate", 2.0))
+        # Keep an absolute floor so a mostly quiet trajectory does not flag
+        # its weakest nonzero bin only because it is high relative to itself.
+        min_chatter_rate = float(metric_option(config, stream.metadata, "min_chatter_rate", 2.0))
+        min_chatter_transitions = int(metric_option(config, stream.metadata, "min_chatter_transitions", 2))
         
-        p95 = percentile(local_rate_values, 95) or 0.0
-        p99 = percentile(local_rate_values, 99) or p95
+        medium_percentile = float(metric_option(config, stream.metadata, "medium_percentile", 95))
+        high_percentile = float(metric_option(config, stream.metadata, "high_percentile", 99))
+        p95 = percentile(bin_rate_values, medium_percentile) or 0.0
+        p99 = percentile(bin_rate_values, high_percentile) or p95
 
         effective_p95 = max(p95, min_chatter_rate)
         effective_p99 = max(p99, min_chatter_rate * 1.5)
 
         threshold = Threshold(
-            name="gripper_chatter_local_spike",
+            name="gripper_chatter_binned_spike",
             basis=ThresholdBasis.INTRA_EPISODE_PERCENTILE,
             condition=ThresholdCondition(
                 operator=ThresholdOperator.GREATER_THAN,
                 threshold_value=effective_p95,
-                reference_statistic="max(local_chatter_rate_p95, min_chatter_rate)",
+                reference_statistic="max(binned_chatter_rate_p95, min_chatter_rate)",
             ),
             severity_bands=[
                 SeverityBand(severity=Severity.MEDIUM, lower=effective_p95, upper=effective_p99),
                 SeverityBand(severity=Severity.HIGH, lower=effective_p99),
             ],
-            description="Flags local gripper open/close bursts relative to this episode.",
+            description="Flags gripper open/close bursts in non-overlapping telemetry bins.",
             numeric_context={
-                "local_chatter_rate_p95": p95,
-                "local_chatter_rate_p99": p99,
-                "window_radius_steps": window_radius_steps,
+                "binned_chatter_rate_p95": p95,
+                "binned_chatter_rate_p99": p99,
+                "medium_percentile": medium_percentile,
+                "high_percentile": high_percentile,
+                "chatter_bin_steps": bin_steps,
+                "min_chatter_transitions": min_chatter_transitions,
             },
         )
         events = []
         if effective_p95 > 0.0:
-            for index in top_indices(local_rate_values, effective_p95, context.max_events_per_metric):
-                start_time, end_time, transition_count, local_rate = local_rates[index]
-                severity = Severity.HIGH if local_rate >= effective_p99 else Severity.MEDIUM
+            eligible_rate_values = [
+                bin_rate if transition_count >= min_chatter_transitions else 0.0
+                for _, _, transition_count, bin_rate in chatter_bins
+            ]
+            for index in top_indices(eligible_rate_values, effective_p95, context.max_events_per_metric):
+                start_time, end_time, transition_count, bin_rate = chatter_bins[index]
+                severity = Severity.HIGH if bin_rate >= effective_p99 else Severity.MEDIUM
                 events.append(
                     MetricEvent(
                         metric_name=self.name,
                         time_window=TimeWindow(start_time, end_time),
                         value={
-                            "local_transition_rate": local_rate,
+                            "binned_transition_rate": bin_rate,
                             "transition_count": transition_count,
+                            "chatter_bin_steps": bin_steps,
+                            "min_chatter_transitions": min_chatter_transitions,
                         },
                         severity=severity,
-                        reason=f"local gripper transition rate {local_rate:.3f}/s exceeded threshold {effective_p95:.3f}/s",
+                        reason=(
+                            f"gripper transition rate {bin_rate:.3f}/s in telemetry bin with "
+                            f"{transition_count} transition(s) exceeded threshold {effective_p95:.3f}/s "
+                            f"and minimum chatter count {min_chatter_transitions}"
+                        ),
                         threshold=threshold,
                     )
                 )
-            events.append(
-                MetricEvent(
-                    metric_name=self.name,
-                    time_window=TimeWindow(timestamps[0], timestamps[-1]),
-                    value=transitions_per_sec,
-                    severity=Severity.LOW,
-                    reason=f"whole-trajectory gripper transition rate was {transitions_per_sec:.3f}/s; retained as summary context",
-                    threshold=threshold,
-                )
-            )
 
         return MetricResult(
             name=self.name,
@@ -151,36 +155,36 @@ class GripperChatterMetric:
                 "total_transitions": total_transitions,
                 "transitions_per_sec": transitions_per_sec,
                 "binary_threshold": threshold_value,
-                "local_chatter_rates": [
+                "chatter_bin_steps": bin_steps,
+                "chatter_bins": [
                     {
                         "start_sec": start_time,
                         "end_sec": end_time,
                         "transition_count": transition_count,
                         "transition_rate": local_rate,
                     }
-                    for start_time, end_time, transition_count, local_rate in local_rates
+                    for start_time, end_time, transition_count, local_rate in chatter_bins
                 ],
             },
         )
 
 
-def _local_transition_rates(
+def _transition_bins(
     transitions: list[int],
-    timestamps: list[float],
-    radius_steps: int,
+    sample_timestamps: list[float],
+    bin_steps: int,
 ) -> list[tuple[float, float, int, float]]:
-    """Compute transition rate around each timestep using a +/- n window."""
+    """Count gripper transitions in non-overlapping telemetry bins."""
 
-    if not transitions or not timestamps:
+    if not transitions or len(sample_timestamps) < 2:
         return []
-    radius_steps = max(radius_steps, 1)
+    bin_steps = max(bin_steps, 1)
     rates: list[tuple[float, float, int, float]] = []
-    for index in range(len(transitions)):
-        start_index = max(0, index - radius_steps)
-        end_index = min(len(transitions) - 1, index + radius_steps)
-        start_time = timestamps[start_index]
-        end_time = timestamps[end_index]
+    for start_index in range(0, len(transitions), bin_steps):
+        end_index = min(len(transitions), start_index + bin_steps)
+        start_time = sample_timestamps[start_index]
+        end_time = sample_timestamps[min(end_index, len(sample_timestamps) - 1)]
         duration = max(end_time - start_time, 1e-9)
-        transition_count = sum(transitions[start_index : end_index + 1])
+        transition_count = sum(transitions[start_index:end_index])
         rates.append((start_time, end_time, transition_count, transition_count / duration))
     return rates

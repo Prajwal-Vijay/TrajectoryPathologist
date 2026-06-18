@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from statistics import mean, median, pstdev
 
-from pathologist.metrics.base import MetricComputationContext
+from pathologist.metrics.base import MetricComputationContext, metric_config, metric_option
 from pathologist.metrics.helpers import find_stream, median_absolute_deviation, summarize
 from pathologist.schemas.common import (
     Modality,
@@ -50,11 +50,16 @@ class TimestampRegularityMetric:
                 metadata={"available": False, "unavailable_reason": "timestamps are not monotonic"},
             )
 
+        config = metric_config(context, self.name)
+        gap_mad_multiplier = float(metric_option(config, stream.metadata, "gap_mad_multiplier", 3.0))
+        gap_median_multiplier = float(metric_option(config, stream.metadata, "gap_median_multiplier", 1.0))
+        high_gap_multiplier = float(metric_option(config, stream.metadata, "high_gap_multiplier", 2.0))
+
         dt_mean = mean(dts)
         dt_std = pstdev(dts) if len(dts) > 1 else 0.0
         dt_median = median(dts)
         dt_mad = median_absolute_deviation(dts)
-        gap_threshold = dt_median + max(3.0 * dt_mad, dt_median)
+        gap_threshold = dt_median + max(gap_mad_multiplier * dt_mad, gap_median_multiplier * dt_median)
         jitter_ratio = dt_std / dt_mean if dt_mean > 0 else 0.0
         gap_locations = [
             {"timestamp_sec": timestamps[index + 1], "dt_sec": dt}
@@ -71,14 +76,20 @@ class TimestampRegularityMetric:
                 reference_statistic="median_dt_plus_max_3mad_or_1median",
             ),
             severity_bands=[
-                SeverityBand(severity=Severity.MEDIUM, lower=gap_threshold, upper=2.0 * gap_threshold),
-                SeverityBand(severity=Severity.HIGH, lower=2.0 * gap_threshold),
+                SeverityBand(severity=Severity.MEDIUM, lower=gap_threshold, upper=high_gap_multiplier * gap_threshold),
+                SeverityBand(severity=Severity.HIGH, lower=high_gap_multiplier * gap_threshold),
             ],
-            numeric_context={"dt_median": dt_median, "dt_mad": dt_mad},
+            numeric_context={
+                "dt_median": dt_median,
+                "dt_mad": dt_mad,
+                "gap_mad_multiplier": gap_mad_multiplier,
+                "gap_median_multiplier": gap_median_multiplier,
+                "high_gap_multiplier": high_gap_multiplier,
+            },
         )
         events = []
         for gap in gap_locations[: context.max_events_per_metric]:
-            severity = Severity.HIGH if gap["dt_sec"] >= 2.0 * gap_threshold else Severity.MEDIUM
+            severity = Severity.HIGH if gap["dt_sec"] >= high_gap_multiplier * gap_threshold else Severity.MEDIUM
             events.append(
                 MetricEvent(
                     metric_name=self.name,

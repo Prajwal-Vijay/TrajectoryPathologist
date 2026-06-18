@@ -26,7 +26,6 @@ class OutcomeAssessment(SchemaBase):
         if self.confidence is not None and not 0 <= self.confidence <= 1:
             raise ValueError("OutcomeAssessment.confidence must be in [0, 1].")
 
-
 @dataclass(slots=True)
 class TrajectoryReport(SchemaBase):
     """Grounded pathology report for one trajectory."""
@@ -48,3 +47,4 @@ class TrajectoryReport(SchemaBase):
         require_non_empty(self.overall_explanation, "TrajectoryReport.overall_explanation")
         if self.review_priority_score is not None and not 0 <= self.review_priority_score <= 1:
             raise ValueError("TrajectoryReport.review_priority_score must be in [0, 1].")
+ 

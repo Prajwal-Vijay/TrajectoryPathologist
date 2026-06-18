@@ -12,6 +12,7 @@ from pathologist.schemas import (
     MetricEvent,
     MetricProfile,
     MetricResult,
+    MetricSample,
     TrajectoryBundle,
     Severity,
     TimeWindow,
@@ -27,6 +28,13 @@ def test_metric_selector_fuses_overlapping_metric_events(tmp_path: Path | None =
             MetricResult(
                 name="motion_smoothness",
                 description="jerk spikes",
+                samples=[
+                    MetricSample(timestamp_sec=9.0, value=1.0),
+                    MetricSample(timestamp_sec=9.5, value=2.0),
+                    MetricSample(timestamp_sec=10.0, value=12.0),
+                    MetricSample(timestamp_sec=10.5, value=3.0),
+                    MetricSample(timestamp_sec=11.0, value=1.0),
+                ],
                 events=[
                     MetricEvent(
                         metric_name="motion_smoothness",
@@ -92,7 +100,11 @@ def test_metric_selector_fuses_overlapping_metric_events(tmp_path: Path | None =
         ],
     )
 
-    selector = MetricEventSelector(point_event_delta_sec=0.2, frame_stride_within_window=10)
+    selector = MetricEventSelector(
+        point_event_delta_sec=0.2,
+        frame_stride_within_window=10,
+        metric_packet_context_steps=1,
+    )
     proposals = selector.select(profile, trajectory_bundle=bundle, debug_timeline_path=debug_path)
 
     assert proposals
@@ -103,8 +115,13 @@ def test_metric_selector_fuses_overlapping_metric_events(tmp_path: Path | None =
     assert "timestamp_regularity" not in proposals[0].metadata["metric_names"]
     assert len(proposals[0].candidate_frames) == 3
     assert {frame.camera_name for frame in proposals[0].candidate_frames} == {"head", "left", "right"}
+    motion_packet = next(packet for packet in proposals[0].metric_packet if packet.name == "motion_smoothness")
+    assert [sample.timestamp_sec for sample in motion_packet.samples] == [10.0, 10.5]
+    assert motion_packet.metadata["original_sample_count"] == 5
+    assert motion_packet.metadata["local_sample_count"] == 2
 
     payload = json.loads(debug_path.read_text(encoding="utf-8"))
     assert payload["bundle_id"] == "demo"
     assert payload["point_event_delta_sec"] == 0.2
+    assert payload["metric_packet_context_steps"] == 1
     assert payload["fused_timeline_segments"][0]["overlap_count"] == 3

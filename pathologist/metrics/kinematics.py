@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from pathologist.metrics.base import MetricComputationContext
+from pathologist.metrics.base import MetricComputationContext, metric_config, metric_option
 from pathologist.metrics.helpers import (
     align_timestamps,
     extract_vector_series,
@@ -212,20 +212,21 @@ class MotionSmoothnessMetric:
             jerks.append(l2_norm(jerk_vector))
             jerk_times.append(acceleration_times[index])
 
+        config = metric_config(context, self.name)
         baseline_median = percentile(jerks, 50) or 0.0
         baseline_mad = median_absolute_deviation(jerks)
-        """
-        NOTE:
-        Some universal value to say this much jerk is fine for any given task. Needs Calibration
-        """
-        max_tolerable_jerk = float(stream.metadata.get("max_tolerable_jerk", 0.05)) 
+        max_tolerable_jerk = float(metric_option(config, stream.metadata, "max_tolerable_jerk", 0.05))
         
-        p95 = percentile(jerks, 95) or 0.0
-        p99 = percentile(jerks, 99) or p95
-        robust_medium_threshold = baseline_median + 3.0 * baseline_mad
-        robust_high_threshold = baseline_median + 6.0 * baseline_mad
-        numerical_zero_jerk_norm = float(stream.metadata.get("numerical_zero_jerk_norm", 1e-9))
-        min_jerk_norm = float(stream.metadata.get("min_jerk_norm", 0.0))
+        medium_percentile = float(metric_option(config, stream.metadata, "medium_percentile", 95))
+        high_percentile = float(metric_option(config, stream.metadata, "high_percentile", 99))
+        robust_medium_mad_multiplier = float(metric_option(config, stream.metadata, "robust_medium_mad_multiplier", 3.0))
+        robust_high_mad_multiplier = float(metric_option(config, stream.metadata, "robust_high_mad_multiplier", 6.0))
+        p95 = percentile(jerks, medium_percentile) or 0.0
+        p99 = percentile(jerks, high_percentile) or p95
+        robust_medium_threshold = baseline_median + robust_medium_mad_multiplier * baseline_mad
+        robust_high_threshold = baseline_median + robust_high_mad_multiplier * baseline_mad
+        numerical_zero_jerk_norm = float(metric_option(config, stream.metadata, "numerical_zero_jerk_norm", 1e-9))
+        min_jerk_norm = float(metric_option(config, stream.metadata, "min_jerk_norm", 0.0))
         effective_p95 = max(p95, robust_medium_threshold, numerical_zero_jerk_norm, max_tolerable_jerk, min_jerk_norm)
         effective_p99 = max(p99, robust_high_threshold, effective_p95)
 
@@ -248,6 +249,11 @@ class MotionSmoothnessMetric:
                 "median_plus_6mad": robust_high_threshold,
                 "episode_p95": p95,
                 "episode_p99": p99,
+                "medium_percentile": medium_percentile,
+                "high_percentile": high_percentile,
+                "robust_medium_mad_multiplier": robust_medium_mad_multiplier,
+                "robust_high_mad_multiplier": robust_high_mad_multiplier,
+                "max_tolerable_jerk": max_tolerable_jerk,
                 "numerical_zero_jerk_norm": numerical_zero_jerk_norm,
                 "min_jerk_norm": min_jerk_norm,
                 "effective_medium_threshold": effective_p95,
@@ -330,10 +336,16 @@ class StallingMetric:
             speeds.append(l2_norm(vector_diff(positions[index], positions[index - 1])) / dt)
             speed_times.append(timestamps[index])
 
+        config = metric_config(context, self.name)
         positive_speeds = [speed for speed in speeds if speed > 0.0]
-        p10 = percentile(positive_speeds, 10) or 0.0
+        speed_percentile = float(metric_option(config, stream.metadata, "speed_percentile", 10))
+        speed_median_fraction = float(metric_option(config, stream.metadata, "speed_median_fraction", 0.05))
+        low_fraction = float(metric_option(config, stream.metadata, "low_fraction", 0.10))
+        medium_fraction = float(metric_option(config, stream.metadata, "medium_fraction", 0.20))
+        high_fraction = float(metric_option(config, stream.metadata, "high_fraction", 0.40))
+        p10 = percentile(positive_speeds, speed_percentile) or 0.0
         p50 = percentile(positive_speeds, 50) or 0.0
-        stall_threshold = min(p10, 0.05 * p50) if p50 > 0 else p10
+        stall_threshold = min(p10, speed_median_fraction * p50) if p50 > 0 else p10
         stalled = [speed <= stall_threshold for speed in speeds]
         stall_fraction = sum(1 for value in stalled if value) / len(stalled) if stalled else 0.0
         threshold = Threshold(
@@ -342,14 +354,20 @@ class StallingMetric:
             condition=ThresholdCondition(
                 operator=ThresholdOperator.LESS_THAN_OR_EQUAL,
                 threshold_value=stall_threshold,
-                reference_statistic="min(speed_p10, 0.05_speed_p50)",
+                reference_statistic="min(speed_percentile, speed_median_fraction * speed_p50)",
             ),
             severity_bands=[
-                SeverityBand(severity=Severity.LOW, lower=0.10, upper=0.20),
-                SeverityBand(severity=Severity.MEDIUM, lower=0.20, upper=0.40),
-                SeverityBand(severity=Severity.HIGH, lower=0.40),
+                SeverityBand(severity=Severity.LOW, lower=low_fraction, upper=medium_fraction),
+                SeverityBand(severity=Severity.MEDIUM, lower=medium_fraction, upper=high_fraction),
+                SeverityBand(severity=Severity.HIGH, lower=high_fraction),
             ],
-            numeric_context={"speed_p10": p10, "speed_p50": p50, "stall_fraction": stall_fraction},
+            numeric_context={
+                "speed_percentile_value": p10,
+                "speed_percentile": speed_percentile,
+                "speed_p50": p50,
+                "speed_median_fraction": speed_median_fraction,
+                "stall_fraction": stall_fraction,
+            },
         )
         events = []
         for start_index, end_index in _true_runs(stalled):
@@ -363,7 +381,7 @@ class StallingMetric:
                     metric_name=self.name,
                     time_window=TimeWindow(start_time, end_time),
                     value=duration,
-                    severity=_stall_severity(stall_fraction),
+                    severity=_stall_severity(stall_fraction, medium_fraction, high_fraction),
                     reason=f"low-motion segment lasted {duration:.3f}s using intra-episode speed threshold {stall_threshold:.4f}",
                     threshold=threshold,
                 )
@@ -389,14 +407,20 @@ class StallingMetric:
                 "stream_name": stream.name,
                 "stall_fraction": stall_fraction,
                 "stall_speed_threshold": stall_threshold,
+                "speed_percentile": speed_percentile,
+                "speed_median_fraction": speed_median_fraction,
             },
         )
 
 
-def _stall_severity(stall_fraction: float) -> Severity:
-    if stall_fraction >= 0.40:
+def _stall_severity(
+    stall_fraction: float,
+    medium_fraction: float,
+    high_fraction: float,
+) -> Severity:
+    if stall_fraction >= high_fraction:
         return Severity.HIGH
-    if stall_fraction >= 0.20:
+    if stall_fraction >= medium_fraction:
         return Severity.MEDIUM
     return Severity.LOW
 

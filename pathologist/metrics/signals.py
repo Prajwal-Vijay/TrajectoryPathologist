@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from pathologist.metrics.base import MetricComputationContext
+from pathologist.metrics.base import MetricComputationContext, metric_config, metric_option
 from pathologist.metrics.helpers import (
     align_timestamps,
     extract_vector_series,
@@ -41,7 +41,8 @@ class ActionRangeSaturationMetric:
                 metadata={"available": False, "unavailable_reason": "requires an action stream with records"},
             )
 
-        low, high = _action_bounds(stream.metadata, context.bundle.raw_metadata)
+        config = metric_config(context, self.name)
+        low, high = _action_bounds(stream.metadata, context.bundle.raw_metadata, config)
         if low is None or high is None:
             return MetricResult(
                 name=self.name,
@@ -55,7 +56,10 @@ class ActionRangeSaturationMetric:
             )
 
         width = min(len(low), len(high), min(len(action) for action in actions))
-        tolerance = float(stream.metadata.get("saturation_tolerance", 1e-6))
+        tolerance = float(metric_option(config, stream.metadata, "saturation_tolerance", 1e-6))
+        low_fraction = float(metric_option(config, stream.metadata, "low_fraction", 0.01))
+        medium_fraction = float(metric_option(config, stream.metadata, "medium_fraction", 0.05))
+        high_fraction = float(metric_option(config, stream.metadata, "high_fraction", 0.15))
         sample_values = []
         saturated_dims_per_step: list[list[int]] = []
         saturated_steps = 0
@@ -85,14 +89,17 @@ class ActionRangeSaturationMetric:
                 reference_statistic="action_space_bounds",
             ),
             severity_bands=[
-                SeverityBand(severity=Severity.LOW, lower=0.01, upper=0.05),
-                SeverityBand(severity=Severity.MEDIUM, lower=0.05, upper=0.15),
-                SeverityBand(severity=Severity.HIGH, lower=0.15),
+                SeverityBand(severity=Severity.LOW, lower=low_fraction, upper=medium_fraction),
+                SeverityBand(severity=Severity.MEDIUM, lower=medium_fraction, upper=high_fraction),
+                SeverityBand(severity=Severity.HIGH, lower=high_fraction),
             ],
             numeric_context={
                 "tolerance": tolerance,
                 "saturated_step_fraction": step_fraction,
                 "saturated_dimension_fraction": dimension_fraction,
+                "low_fraction": low_fraction,
+                "medium_fraction": medium_fraction,
+                "high_fraction": high_fraction,
             },
         )
         events = []
@@ -111,7 +118,7 @@ class ActionRangeSaturationMetric:
                 for index in range(start_index, end_index + 1)
             )
             run_fraction = run_saturated_dims / (run_step_count * width) if width else 0.0
-            severity = _action_saturation_severity(run_fraction)
+            severity = _action_saturation_severity(run_fraction, medium_fraction, high_fraction)
             events.append(
                 MetricEvent(
                     metric_name=self.name,
@@ -168,7 +175,10 @@ class ActionDistributionEntropyMetric:
             )
 
         width = min(len(action) for action in actions)
-        bins = int(stream.metadata.get("entropy_bins", 10))
+        config = metric_config(context, self.name)
+        bins = int(metric_option(config, stream.metadata, "entropy_bins", 10))
+        low_entropy_threshold = float(metric_option(config, stream.metadata, "low_entropy_threshold", 0.15))
+        high_entropy_threshold = float(metric_option(config, stream.metadata, "high_entropy_threshold", 0.95))
         entropy_per_dim = []
         for dim in range(width):
             values = [action[dim] for action in actions]
@@ -180,24 +190,27 @@ class ActionDistributionEntropyMetric:
             basis=ThresholdBasis.HEURISTIC_DEFAULT,
             condition=ThresholdCondition(
                 operator=ThresholdOperator.OUTSIDE_RANGE,
-                lower=0.15,
-                upper=0.95,
+                lower=low_entropy_threshold,
+                upper=high_entropy_threshold,
                 inclusive_lower=True,
                 inclusive_upper=True,
                 reference_statistic="normalized_entropy",
             ),
-            severity_bands=[SeverityBand(severity=Severity.LOW, lower=0.0, upper=0.15)],
+            severity_bands=[SeverityBand(severity=Severity.LOW, lower=0.0, upper=low_entropy_threshold)],
             description="Flags very low diversity or nearly random-looking action distributions as review hints.",
         )
         events = []
-        if mean_entropy < 0.15 or mean_entropy > 0.95:
+        if mean_entropy < low_entropy_threshold or mean_entropy > high_entropy_threshold:
             events.append(
                 MetricEvent(
                     metric_name=self.name,
                     time_window=TimeWindow(timestamps[0], timestamps[-1]),
                     value=mean_entropy,
                     severity=Severity.LOW,
-                    reason=f"mean action entropy {mean_entropy:.3f} is outside heuristic review range [0.15, 0.95]",
+                    reason=(
+                        f"mean action entropy {mean_entropy:.3f} is outside heuristic review range "
+                        f"[{low_entropy_threshold:.3f}, {high_entropy_threshold:.3f}]"
+                    ),
                     threshold=threshold,
                 )
             )
@@ -218,6 +231,8 @@ class ActionDistributionEntropyMetric:
                 "entropy_per_dim": entropy_per_dim,
                 "mean_entropy": mean_entropy,
                 "num_bins": bins,
+                "low_entropy_threshold": low_entropy_threshold,
+                "high_entropy_threshold": high_entropy_threshold,
             },
         )
 
@@ -225,9 +240,12 @@ class ActionDistributionEntropyMetric:
 def _action_bounds(
     stream_metadata: dict[str, object],
     bundle_metadata: dict[str, object],
+    config: dict[str, object],
 ) -> tuple[list[float] | None, list[float] | None]:
-    low = stream_metadata.get("action_low") or stream_metadata.get("low")
-    high = stream_metadata.get("action_high") or stream_metadata.get("high")
+    low = config.get("action_low") or config.get("low")
+    high = config.get("action_high") or config.get("high")
+    low = low or stream_metadata.get("action_low") or stream_metadata.get("low")
+    high = high or stream_metadata.get("action_high") or stream_metadata.get("high")
     action_space = bundle_metadata.get("action_space")
     if isinstance(action_space, dict):
         low = low or action_space.get("low")
@@ -237,10 +255,14 @@ def _action_bounds(
     return [float(value) for value in low], [float(value) for value in high]
 
 
-def _action_saturation_severity(fraction: float) -> Severity:
-    if fraction >= 0.15:
+def _action_saturation_severity(
+    fraction: float,
+    medium_fraction: float,
+    high_fraction: float,
+) -> Severity:
+    if fraction >= high_fraction:
         return Severity.HIGH
-    if fraction >= 0.05:
+    if fraction >= medium_fraction:
         return Severity.MEDIUM
     return Severity.LOW
 

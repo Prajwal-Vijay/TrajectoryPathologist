@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from pathologist.metrics.base import MetricComputationContext, MetricComputer
 from pathologist.metrics.gripper import GripperChatterMetric
@@ -38,14 +39,24 @@ class MetricEngine:
     """Compute a MetricProfile from a TrajectoryBundle."""
 
     metrics: list[MetricComputer] = field(default_factory=default_metric_computers)
-    max_events_per_metric: int = 20
+    max_events_per_metric: int | None = None
+    config: dict[str, Any] = field(default_factory=dict)
 
     def compute(self, bundle: TrajectoryBundle) -> MetricProfile:
         """Compute all configured metrics."""
 
+        max_events_per_metric = self.max_events_per_metric
+        if max_events_per_metric is None:
+            metrics_config = self.config.get("metrics")
+            if isinstance(metrics_config, dict):
+                max_events_per_metric = int(metrics_config.get("max_events_per_metric", 20))
+            else:
+                max_events_per_metric = 20
+
         context = MetricComputationContext(
             bundle=bundle,
-            max_events_per_metric=self.max_events_per_metric,
+            max_events_per_metric=max_events_per_metric,
+            config=self.config,
         )
         results = [metric.compute(context) for metric in self.metrics]
         global_events = []

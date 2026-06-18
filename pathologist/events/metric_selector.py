@@ -49,14 +49,18 @@ class MetricEventSelector:
         point_event_delta_sec: float,
         ignored_metric_names: set[str] | None = None,
         frame_stride_within_window: int = 10,
+        metric_packet_context_steps: int = 10,
     ) -> None:
         if point_event_delta_sec < 0:
             raise ValueError("point_event_delta_sec must be non-negative.")
         if frame_stride_within_window <= 0:
             raise ValueError("frame_stride_within_window must be positive.")
+        if metric_packet_context_steps < 0:
+            raise ValueError("metric_packet_context_steps must be non-negative.")
         self.point_event_delta_sec = point_event_delta_sec
         self.ignored_metric_names = ignored_metric_names or {"timestamp_regularity"}
         self.frame_stride_within_window = frame_stride_within_window
+        self.metric_packet_context_steps = metric_packet_context_steps
 
     def select(
         self,
@@ -82,8 +86,16 @@ class MetricEventSelector:
         proposals = []
         for rank, segment in enumerate(ranked_segments, start=1):
             member_events = [event_lookup[event_id].metric_event for event_id in segment.member_event_ids]
-            metric_packet = [metric_lookup[name] for name in segment.metric_names if name in metric_lookup]
             proposal_time_window = TimeWindow(segment.start_sec, segment.end_sec)
+            metric_packet = [
+                _local_metric_context(
+                    metric_lookup[name],
+                    proposal_time_window,
+                    context_steps=self.metric_packet_context_steps,
+                )
+                for name in segment.metric_names
+                if name in metric_lookup
+            ]
             candidate_frames = self._select_candidate_frames(
                 trajectory_bundle=trajectory_bundle,
                 proposal_time_window=proposal_time_window,
@@ -188,6 +200,7 @@ class MetricEventSelector:
         payload = {
             "bundle_id": metric_profile.bundle_id,
             "point_event_delta_sec": self.point_event_delta_sec,
+            "metric_packet_context_steps": self.metric_packet_context_steps,
             "ignored_metric_names": sorted(self.ignored_metric_names),
             "normalized_metric_events": [
                 {
@@ -282,6 +295,89 @@ def _build_timeline_segments(
         else:
             segments.append(segment)
     return segments
+
+
+def _local_metric_context(
+    metric: MetricResult,
+    proposal_time_window: TimeWindow,
+    context_steps: int,
+) -> MetricResult:
+    """Return a metric packet trimmed to the proposal neighborhood."""
+
+    timestep_sec = _metric_sample_timestep(metric)
+    context_radius_sec = timestep_sec * context_steps
+    context_start_sec = max(0.0, proposal_time_window.start_sec - context_radius_sec)
+    proposal_end_sec = proposal_time_window.end_sec or proposal_time_window.start_sec
+    context_end_sec = proposal_end_sec + context_radius_sec
+
+    local_samples = [
+        sample
+        for sample in metric.samples
+        if _sample_overlaps_window(sample, context_start_sec, context_end_sec)
+    ]
+    local_events = [
+        event
+        for event in metric.events
+        if _time_windows_overlap(event.time_window, context_start_sec, context_end_sec)
+    ]
+
+    metadata = dict(metric.metadata)
+    metadata.update(
+        {
+            "local_context_window": {
+                "start_sec": context_start_sec,
+                "end_sec": context_end_sec,
+            },
+            "local_context_steps": context_steps,
+            "local_context_timestep_sec": timestep_sec,
+            "original_sample_count": len(metric.samples),
+            "local_sample_count": len(local_samples),
+            "original_event_count": len(metric.events),
+            "local_event_count": len(local_events),
+        }
+    )
+
+    return MetricResult(
+        name=metric.name,
+        description=metric.description,
+        source_modalities=metric.source_modalities,
+        unit=metric.unit,
+        samples=local_samples,
+        summary=metric.summary,
+        thresholds=metric.thresholds,
+        events=local_events,
+        display_hint=metric.display_hint,
+        metadata=metadata,
+    )
+
+
+def _metric_sample_timestep(metric: MetricResult) -> float:
+    """Estimate a metric's sample timestep from its timestamped samples."""
+
+    timestamps = sorted({sample.timestamp_sec for sample in metric.samples})
+    dts = [
+        current - previous
+        for previous, current in zip(timestamps, timestamps[1:])
+        if current > previous
+    ]
+    if not dts:
+        return 0.0
+    midpoint = len(dts) // 2
+    sorted_dts = sorted(dts)
+    if len(sorted_dts) % 2 == 1:
+        return sorted_dts[midpoint]
+    return (sorted_dts[midpoint - 1] + sorted_dts[midpoint]) / 2.0
+
+
+def _sample_overlaps_window(sample, start_sec: float, end_sec: float) -> bool:
+    if sample.window is not None:
+        return _time_windows_overlap(sample.window, start_sec, end_sec)
+    return start_sec <= sample.timestamp_sec <= end_sec
+
+
+def _time_windows_overlap(time_window: TimeWindow, start_sec: float, end_sec: float) -> bool:
+    window_end_sec = time_window.end_sec or time_window.start_sec
+    return time_window.start_sec <= end_sec and window_end_sec >= start_sec
 
 
 def _time_window_to_dict(time_window: TimeWindow) -> dict[str, float | None]:
