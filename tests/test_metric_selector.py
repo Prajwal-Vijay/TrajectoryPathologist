@@ -125,3 +125,74 @@ def test_metric_selector_fuses_overlapping_metric_events(tmp_path: Path | None =
     assert payload["point_event_delta_sec"] == 0.2
     assert payload["metric_packet_context_steps"] == 1
     assert payload["fused_timeline_segments"][0]["overlap_count"] == 3
+
+
+def test_metric_selector_unions_same_metric_events_before_intersection(tmp_path: Path | None = None) -> None:
+    output_dir = tmp_path or Path("/tmp/pathologist_metric_selector_union_test")
+    debug_path = output_dir / "timeline_debug.json"
+    profile = MetricProfile(
+        bundle_id="demo",
+        metrics=[
+            MetricResult(
+                name="motion_smoothness",
+                description="jerk spikes",
+                events=[
+                    MetricEvent(
+                        metric_name="motion_smoothness",
+                        time_window=TimeWindow(10.0),
+                        value=10.0,
+                        severity=Severity.HIGH,
+                        reason="first jerk spike",
+                    ),
+                    MetricEvent(
+                        metric_name="motion_smoothness",
+                        time_window=TimeWindow(10.1),
+                        value=11.0,
+                        severity=Severity.HIGH,
+                        reason="second jerk spike",
+                    ),
+                ],
+            ),
+            MetricResult(
+                name="gripper_chatter",
+                description="gripper chatter",
+                events=[
+                    MetricEvent(
+                        metric_name="gripper_chatter",
+                        time_window=TimeWindow(10.05, 10.15),
+                        value=2,
+                        severity=Severity.MEDIUM,
+                        reason="chatter burst",
+                    )
+                ],
+            ),
+        ],
+    )
+
+    selector = MetricEventSelector(point_event_delta_sec=0.2)
+    proposals = selector.select(profile, debug_timeline_path=debug_path)
+
+    assert proposals[0].time_window is not None
+    assert proposals[0].time_window.start_sec == 10.05
+    assert proposals[0].time_window.end_sec == 10.15
+    assert proposals[0].metadata["overlap_metric_count"] == 2
+    assert proposals[0].metadata["metric_names"] == ["gripper_chatter", "motion_smoothness"]
+    assert proposals[0].metadata["member_event_ids"] == [
+        "gripper_chatter_event_000",
+        "motion_smoothness_event_000",
+        "motion_smoothness_event_001",
+    ]
+
+    payload = json.loads(debug_path.read_text(encoding="utf-8"))
+    motion_support = [
+        interval
+        for interval in payload["metric_support_intervals"]
+        if interval["metric_name"] == "motion_smoothness"
+    ]
+    assert len(motion_support) == 1
+    assert motion_support[0]["start_sec"] == 9.8
+    assert round(motion_support[0]["end_sec"], 3) == 10.3
+    assert motion_support[0]["member_event_ids"] == [
+        "motion_smoothness_event_000",
+        "motion_smoothness_event_001",
+    ]

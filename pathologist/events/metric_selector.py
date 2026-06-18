@@ -41,6 +41,16 @@ class TimelineSegment:
         return len(self.metric_names)
 
 
+@dataclass(slots=True)
+class MetricSupportInterval:
+    """Unioned active interval for one metric."""
+
+    metric_name: str
+    start_sec: float
+    end_sec: float
+    member_event_ids: list[str]
+
+
 class MetricEventSelector:
     """Fuse metric-event windows into ranked key-event proposals."""
 
@@ -76,10 +86,11 @@ class MetricEventSelector:
             if metric.name not in self.ignored_metric_names
         }
         normalized_events = self._normalize_metric_events(metric_lookup) # Expands the point metrics into windows
-        timeline_segments = _build_timeline_segments(normalized_events)
+        metric_support_intervals = _merge_events_within_each_metric(normalized_events)
+        timeline_segments = _build_timeline_segments(metric_support_intervals)
         ranked_segments = sorted(
             timeline_segments,
-            key=lambda segment: (-segment.overlap_count, -len(segment.member_event_ids), segment.start_sec),
+            key=lambda segment: (-segment.overlap_count, segment.start_sec),
         )
 
         event_lookup = {event.event_id: event for event in normalized_events}
@@ -126,6 +137,7 @@ class MetricEventSelector:
             self._write_debug_timeline(
                 metric_profile=metric_profile,
                 normalized_events=normalized_events,
+                metric_support_intervals=metric_support_intervals,
                 timeline_segments=ranked_segments,
                 debug_timeline_path=Path(debug_timeline_path),
             )
@@ -191,6 +203,7 @@ class MetricEventSelector:
         self,
         metric_profile: MetricProfile,
         normalized_events: list[NormalizedMetricEvent],
+        metric_support_intervals: list[MetricSupportInterval],
         timeline_segments: list[TimelineSegment],
         debug_timeline_path: Path,
     ) -> None:
@@ -211,6 +224,15 @@ class MetricEventSelector:
                     "reason": event.metric_event.reason,
                 }
                 for event in normalized_events
+            ],
+            "metric_support_intervals": [
+                {
+                    "metric_name": interval.metric_name,
+                    "start_sec": interval.start_sec,
+                    "end_sec": interval.end_sec,
+                    "member_event_ids": interval.member_event_ids,
+                }
+                for interval in metric_support_intervals
             ],
             "fused_timeline_segments": [
                 {
@@ -240,22 +262,87 @@ def _expand_time_window(
     return TimeWindow(start_sec, end_sec)
 
 
-def _build_timeline_segments(
+def _merge_events_within_each_metric(
     normalized_events: list[NormalizedMetricEvent],
-) -> list[TimelineSegment]:
-    """Build exact intersection intervals from overlapping normalized events."""
+) -> list[MetricSupportInterval]:
+    """Union overlapping event windows within each metric before cross-metric fusion."""
 
-    if not normalized_events:
+    events_by_metric: dict[str, list[NormalizedMetricEvent]] = {}
+    for event in normalized_events:
+        events_by_metric.setdefault(event.metric_name, []).append(event)
+
+    support_intervals: list[MetricSupportInterval] = []
+    for metric_name, metric_events in events_by_metric.items():
+        sorted_events = sorted(
+            metric_events,
+            key=lambda event: (
+                event.normalized_time_window.start_sec,
+                event.normalized_time_window.end_sec or event.normalized_time_window.start_sec,
+                event.event_id,
+            ),
+        )
+        current_start: float | None = None
+        current_end: float | None = None
+        current_event_ids: list[str] = []
+
+        for event in sorted_events:
+            start_sec = event.normalized_time_window.start_sec
+            end_sec = event.normalized_time_window.end_sec or event.normalized_time_window.start_sec
+            if current_start is None or current_end is None:
+                current_start = start_sec
+                current_end = end_sec
+                current_event_ids = [event.event_id]
+                continue
+
+            if start_sec <= current_end:
+                current_end = max(current_end, end_sec)
+                current_event_ids.append(event.event_id)
+                continue
+
+            support_intervals.append(
+                MetricSupportInterval(
+                    metric_name=metric_name,
+                    start_sec=current_start,
+                    end_sec=current_end,
+                    member_event_ids=sorted(current_event_ids),
+                )
+            )
+            current_start = start_sec
+            current_end = end_sec
+            current_event_ids = [event.event_id]
+
+        if current_start is not None and current_end is not None:
+            support_intervals.append(
+                MetricSupportInterval(
+                    metric_name=metric_name,
+                    start_sec=current_start,
+                    end_sec=current_end,
+                    member_event_ids=sorted(current_event_ids),
+                )
+            )
+
+    return sorted(
+        support_intervals,
+        key=lambda interval: (interval.start_sec, interval.end_sec, interval.metric_name),
+    )
+
+
+def _build_timeline_segments(
+    metric_support_intervals: list[MetricSupportInterval],
+) -> list[TimelineSegment]:
+    """Build exact intersection intervals from metric-level support intervals."""
+
+    if not metric_support_intervals:
         return []
 
     boundaries = sorted(
         {
-            event.normalized_time_window.start_sec
-            for event in normalized_events
+            interval.start_sec
+            for interval in metric_support_intervals
         }
     |   {
-            event.normalized_time_window.end_sec or event.normalized_time_window.start_sec
-            for event in normalized_events
+            interval.end_sec
+            for interval in metric_support_intervals
         }
     )
 
@@ -263,17 +350,22 @@ def _build_timeline_segments(
     for start_sec, end_sec in zip(boundaries, boundaries[1:]):
         if end_sec <= start_sec:
             continue
-        active_events = [
-            event
-            for event in normalized_events
-            # This basically checks if an event covers this tiny slice of the timeline. Jerks will appear in tiny slices on their own.
-            if event.normalized_time_window.start_sec <= start_sec
-            and (event.normalized_time_window.end_sec or event.normalized_time_window.start_sec) >= end_sec
+        active_intervals = [
+            interval
+            for interval in metric_support_intervals
+            if interval.start_sec <= start_sec
+            and interval.end_sec >= end_sec
         ]
-        if not active_events:
+        if not active_intervals:
             continue
-        metric_names = sorted({event.metric_name for event in active_events})
-        member_event_ids = sorted(event.event_id for event in active_events)
+        metric_names = sorted(interval.metric_name for interval in active_intervals)
+        member_event_ids = sorted(
+            {
+                event_id
+                for interval in active_intervals
+                for event_id in interval.member_event_ids
+            }
+        )
         segment = TimelineSegment(
             start_sec=start_sec,
             end_sec=end_sec,
