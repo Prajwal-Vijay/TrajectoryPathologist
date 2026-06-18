@@ -44,14 +44,16 @@
   },
   "selector": {
     "point_event_delta_sec": 0.2,
-    "frame_stride_within_window": 10,
+    "frame_stride_within_window": 1,
+    "visual_context_sec": 1.0,
+    "max_frames_per_camera": 5,
     "metric_packet_context_steps": 10,
     "ignored_metric_names": [
       "timestamp_regularity"
     ]
   },
   "labeling": {
-    "max_events_to_label": 8,
+    "max_events_to_label": 30,
     "openai_model": null
   }
 }

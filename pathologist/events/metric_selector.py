@@ -60,17 +60,25 @@ class MetricEventSelector:
         point_event_delta_sec: float,
         ignored_metric_names: set[str] | None = None,
         frame_stride_within_window: int = 10,
+        visual_context_sec: float = 1.0,
+        max_frames_per_camera: int = 5,
         metric_packet_context_steps: int = 10,
     ) -> None:
         if point_event_delta_sec < 0:
             raise ValueError("point_event_delta_sec must be non-negative.")
         if frame_stride_within_window <= 0:
             raise ValueError("frame_stride_within_window must be positive.")
+        if visual_context_sec < 0:
+            raise ValueError("visual_context_sec must be non-negative.")
+        if max_frames_per_camera <= 0:
+            raise ValueError("max_frames_per_camera must be positive.")
         if metric_packet_context_steps < 0:
             raise ValueError("metric_packet_context_steps must be non-negative.")
         self.point_event_delta_sec = point_event_delta_sec
         self.ignored_metric_names = ignored_metric_names or {"timestamp_regularity"}
         self.frame_stride_within_window = frame_stride_within_window
+        self.visual_context_sec = visual_context_sec
+        self.max_frames_per_camera = max_frames_per_camera
         self.metric_packet_context_steps = metric_packet_context_steps
 
     def select(
@@ -130,6 +138,7 @@ class MetricEventSelector:
                         "metric_names": segment.metric_names,
                         "member_event_ids": segment.member_event_ids,
                         "candidate_frame_count": len(candidate_frames),
+                        "visual_context_sec": self.visual_context_sec,
                     },
                 )
             )
@@ -150,30 +159,34 @@ class MetricEventSelector:
         trajectory_bundle: TrajectoryBundle | None,
         proposal_time_window: TimeWindow,
     ) -> list[CameraFrameRef]:
-        """Attach sampled camera frames inside the proposal window."""
+        """Attach sampled camera frames around the proposal window."""
 
         if trajectory_bundle is None or not trajectory_bundle.camera_frames:
             return []
 
-        frames_in_window = [
+        proposal_end_sec = proposal_time_window.end_sec or proposal_time_window.start_sec
+        visual_start_sec = max(0.0, proposal_time_window.start_sec - self.visual_context_sec)
+        visual_end_sec = proposal_end_sec + self.visual_context_sec
+        frames_in_context = [
             frame
             for frame in trajectory_bundle.camera_frames
-            if proposal_time_window.start_sec <= frame.timestamp_sec <= (proposal_time_window.end_sec or proposal_time_window.start_sec)
+            if visual_start_sec <= frame.timestamp_sec <= visual_end_sec
         ]
-        if not frames_in_window:
+        if not frames_in_context:
             return []
 
         sampled_frames: list[CameraFrameRef] = []
-        camera_names = sorted({frame.camera_name for frame in frames_in_window})
+        camera_names = sorted({frame.camera_name for frame in frames_in_context})
         for camera_name in camera_names:
             camera_frames = [
                 frame
-                for frame in frames_in_window
+                for frame in frames_in_context
                 if frame.camera_name == camera_name
             ]
             camera_frames.sort(key=lambda frame: (frame.timestamp_sec, frame.frame_index or -1))
-            sampled_frames.extend(camera_frames[:: self.frame_stride_within_window])
-        sampled_frames.sort(key=lambda frame: (frame.timestamp_sec, frame.camera_name, frame.frame_index or -1))
+            strided_frames = camera_frames[:: self.frame_stride_within_window]
+            sampled_frames.extend(_evenly_sample_frames(strided_frames, self.max_frames_per_camera))
+        sampled_frames.sort(key=_camera_frame_sort_key)
         return sampled_frames
 
     def _normalize_metric_events(
@@ -214,6 +227,8 @@ class MetricEventSelector:
         payload = {
             "bundle_id": metric_profile.bundle_id,
             "point_event_delta_sec": self.point_event_delta_sec,
+            "visual_context_sec": self.visual_context_sec,
+            "max_frames_per_camera": self.max_frames_per_camera,
             "metric_packet_context_steps": self.metric_packet_context_steps,
             "ignored_metric_names": sorted(self.ignored_metric_names),
             "normalized_metric_events": [
@@ -442,6 +457,38 @@ def _local_metric_context(
         display_hint=metric.display_hint,
         metadata=metadata,
     )
+
+
+def _evenly_sample_frames(
+    frames: list[CameraFrameRef],
+    max_frames: int,
+) -> list[CameraFrameRef]:
+    """Return up to max_frames spread across the candidate frame sequence."""
+
+    if len(frames) <= max_frames:
+        return frames
+    if max_frames == 1:
+        return [frames[len(frames) // 2]]
+
+    last_index = len(frames) - 1
+    sampled_indices = {
+        round(index * last_index / (max_frames - 1))
+        for index in range(max_frames)
+    }
+    return [frames[index] for index in sorted(sampled_indices)]
+
+
+def _camera_frame_sort_key(frame: CameraFrameRef) -> tuple[int, str, float, int]:
+    """Prefer object-level camera sequences before wrist-camera closeups."""
+
+    camera_name = frame.camera_name.lower()
+    if "head" in camera_name or "front" in camera_name or "overhead" in camera_name:
+        camera_priority = 0
+    elif "wrist" in camera_name:
+        camera_priority = 1
+    else:
+        camera_priority = 2
+    return (camera_priority, frame.camera_name, frame.timestamp_sec, frame.frame_index or -1)
 
 
 def _local_metric_metadata(

@@ -26,6 +26,7 @@ class FakeEventLabelClient:
     def label_event(self, payload):
         self.last_payload = payload
         return {
+            "visual_observation": "The head camera shows the pot being contacted by the gripper.",
             "phase": "grasp",
             "event_type": "unstable_grasp",
             "objects_involved": ["pot"],
@@ -82,8 +83,12 @@ def test_vlm_event_labeler_populates_key_event_label() -> None:
     assert key_event.label.progress_assessment == ProgressAssessment.REGRESSION.value
     assert len(key_event.label.metric_evidence) == 1
     assert len(key_event.label.visual_evidence) == 1
+    assert key_event.label.metadata["visual_observation"] == "The head camera shows the pot being contacted by the gripper."
     assert client.last_payload is not None
-    assert client.last_payload["metric_evidence"][0]["evidence_id"] == "metric_event_000"
+    assert client.last_payload["metric_trigger_summary"][0]["evidence_id"] == "metric_event_000"
+    assert client.last_payload["metric_trigger_summary"][0]["selection_role"] == "metric trigger for visual inspection"
+    assert "severity" not in client.last_payload["metric_trigger_summary"][0]
+    assert "value" not in client.last_payload["metric_trigger_summary"][0]
 
 
 def test_event_label_payload_contains_task_and_proposal_context() -> None:
@@ -105,3 +110,4 @@ def test_event_label_payload_contains_task_and_proposal_context() -> None:
     assert payload["task_contract"]["task_name"] == "Lift pot"
     assert payload["proposal"]["event_id"] == "demo_metric_overlap_001"
     assert "output_schema" in payload
+    assert "visual_observation" in payload["output_schema"]

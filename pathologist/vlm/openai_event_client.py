@@ -101,6 +101,17 @@ def _image_inputs_from_payload(payload: dict[str, Any]) -> list[dict[str, Any]]:
         encoded_image = base64.b64encode(path.read_bytes()).decode("utf-8")
         image_inputs.append(
             {
+                "type": "input_text",
+                "text": (
+                    f"Image for {frame.get('evidence_id')}: "
+                    f"camera={frame.get('camera_name')}, "
+                    f"timestamp_sec={frame.get('timestamp_sec')}, "
+                    f"frame_index={frame.get('frame_index')}"
+                ),
+            }
+        )
+        image_inputs.append(
+            {
                 "type": "input_image",
                 "image_url": f"data:{mime_type};base64,{encoded_image}",
             }
@@ -130,6 +141,7 @@ def _event_label_json_schema() -> dict[str, Any]:
         "type": "object",
         "additionalProperties": False,
         "properties": {
+            "visual_observation": {"type": "string"},
             "phase": {"type": "string"},
             "event_type": {"type": "string"},
             "objects_involved": string_array,
@@ -145,6 +157,7 @@ def _event_label_json_schema() -> dict[str, Any]:
             "uncertainty_notes": string_array,
         },
         "required": [
+            "visual_observation",
             "phase",
             "event_type",
             "objects_involved",

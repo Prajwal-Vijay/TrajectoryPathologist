@@ -209,3 +209,46 @@ def test_metric_selector_unions_same_metric_events_before_intersection(tmp_path:
         "motion_smoothness_event_000",
         "motion_smoothness_event_001",
     ]
+
+
+def test_metric_selector_attaches_visual_context_frames() -> None:
+    profile = MetricProfile(
+        bundle_id="demo",
+        metrics=[
+            MetricResult(
+                name="motion_smoothness",
+                description="jerk spikes",
+                events=[
+                    MetricEvent(
+                        metric_name="motion_smoothness",
+                        time_window=TimeWindow(229.6),
+                        value=100.0,
+                        severity=Severity.HIGH,
+                        reason="jerk spike",
+                    )
+                ],
+            )
+        ],
+    )
+    bundle = TrajectoryBundle(
+        bundle_id="demo",
+        source_format=BundleFormat.CUSTOM,
+        camera_frames=[
+            CameraFrameRef(camera_name="head", timestamp_sec=229.5, image_path=Path("/tmp/head_459.jpg"), frame_index=459),
+            CameraFrameRef(camera_name="head", timestamp_sec=230.0, image_path=Path("/tmp/head_460.jpg"), frame_index=460),
+            CameraFrameRef(camera_name="head", timestamp_sec=230.5, image_path=Path("/tmp/head_461.jpg"), frame_index=461),
+            CameraFrameRef(camera_name="head", timestamp_sec=232.0, image_path=Path("/tmp/head_464.jpg"), frame_index=464),
+        ],
+    )
+
+    selector = MetricEventSelector(
+        point_event_delta_sec=0.2,
+        frame_stride_within_window=1,
+        visual_context_sec=1.0,
+        max_frames_per_camera=5,
+    )
+    proposals = selector.select(profile, trajectory_bundle=bundle)
+
+    assert proposals[0].time_window.start_sec == 229.4
+    assert proposals[0].time_window.end_sec == 229.79999999999998
+    assert [frame.frame_index for frame in proposals[0].candidate_frames] == [459, 460, 461]

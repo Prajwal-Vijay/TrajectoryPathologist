@@ -23,6 +23,7 @@ def test_openai_event_client_builds_responses_request() -> None:
     assert request_body["input"][0]["content"][0]["type"] == "input_text"
     assert request_body["text"]["format"]["type"] == "json_schema"
     assert request_body["text"]["format"]["schema"]["required"] == [
+        "visual_observation",
         "phase",
         "event_type",
         "objects_involved",

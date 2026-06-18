@@ -62,11 +62,22 @@ def build_event_label_payload(
 
     return {
         "instructions": (
-            "Interpret this selected robot trajectory event. Use metric values and frame "
-            "references as evidence. Do not invent numeric values. If object/contact state "
-            "is not visible or not supported, mark it uncertain."
+            "Interpret this selected robot trajectory event. Metrics explain why this moment "
+            "was selected for inspection; metric values, thresholds, and severity are not visual "
+            "evidence and are not by themselves failure labels. "
+            "First describe what is visibly happening in the images, especially the head-camera "
+            "sequence when available. Then use metrics to explain why this moment is notable. "
+            "Use the images to judge visible task progress, grasp/contact state, and whether "
+            "the metric anomaly corresponds to success, suboptimality, failure, or uncertainty. "
+            "If the visual evidence shows stable progress or a successful grasp despite a metric "
+            "spike, say that clearly and do not label it as failure. Do not invent numeric values. "
+            "Do not let metric severity override clear visual evidence of grasp/contact state. "
+            "Use uncertain only when the relevant object/contact state is occluded, outside the "
+            "frame, or genuinely visually ambiguous. If the object is visibly held, grasped, "
+            "released, tilted, dropped, or stable, state that visual observation directly."
         ),
         "output_schema": {
+            "visual_observation": "short description of what the images visibly show before metric interpretation",
             "phase": "string or null",
             "event_type": "string or null",
             "objects_involved": "list of strings; empty if unknown",
@@ -92,10 +103,7 @@ def build_event_label_payload(
             "source": str(proposal.source),
             "metadata": _jsonable(proposal.metadata),
         },
-        "metric_evidence": [
-            _metric_event_payload(event, evidence_id=f"metric_event_{index:03d}")
-            for index, event in enumerate(proposal.metric_events)
-        ],
+        "metric_trigger_summary": _metric_trigger_summary(proposal.metric_events),
         "visual_evidence": [
             _frame_payload(frame, evidence_id=f"frame_{index:03d}")
             for index, frame in enumerate(proposal.candidate_frames)
@@ -134,20 +142,23 @@ def parse_key_event_label(
             "raw_vlm_response": _jsonable(response),
             "metric_evidence_ids": metric_ids,
             "visual_evidence_ids": visual_ids,
+            "visual_observation": _optional_string(label_data.get("visual_observation")),
         },
     )
 
 
-def _metric_event_payload(event: MetricEvent, evidence_id: str) -> dict[str, Any]:
-    return {
-        "evidence_id": evidence_id,
-        "metric_name": event.metric_name,
-        "time_window": _time_window_to_dict(event.time_window),
-        "value": _jsonable(event.value),
-        "severity": str(event.severity),
-        "reason": event.reason,
-        "threshold": _jsonable(event.threshold),
-    }
+def _metric_trigger_summary(events: list[MetricEvent]) -> list[dict[str, Any]]:
+    """Compact VLM-facing metric context that avoids anchoring diagnosis."""
+
+    return [
+        {
+            "evidence_id": f"metric_event_{index:03d}",
+            "metric_name": event.metric_name,
+            "time_window": _time_window_to_dict(event.time_window),
+            "selection_role": "metric trigger for visual inspection",
+        }
+        for index, event in enumerate(events)
+    ]
 
 
 def _frame_payload(frame: CameraFrameRef, evidence_id: str) -> dict[str, Any]:
