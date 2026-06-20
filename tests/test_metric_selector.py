@@ -111,6 +111,7 @@ def test_metric_selector_fuses_overlapping_metric_events(tmp_path: Path | None =
         point_event_delta_sec=0.2,
         frame_stride_within_window=10,
         metric_packet_context_steps=1,
+        min_segment_duration_sec=0.0,
     )
     proposals = selector.select(profile, trajectory_bundle=bundle, debug_timeline_path=debug_path)
 
@@ -182,7 +183,7 @@ def test_metric_selector_unions_same_metric_events_before_intersection(tmp_path:
         ],
     )
 
-    selector = MetricEventSelector(point_event_delta_sec=0.2)
+    selector = MetricEventSelector(point_event_delta_sec=0.2, min_segment_duration_sec=0.0)
     proposals = selector.select(profile, debug_timeline_path=debug_path)
 
     assert proposals[0].time_window is not None
@@ -252,3 +253,35 @@ def test_metric_selector_attaches_visual_context_frames() -> None:
     assert proposals[0].time_window.start_sec == 229.4
     assert proposals[0].time_window.end_sec == 229.79999999999998
     assert [frame.frame_index for frame in proposals[0].candidate_frames] == [459, 460, 461]
+
+
+def test_metric_selector_keeps_point_event_windows_at_configured_min_duration() -> None:
+    profile = MetricProfile(
+        bundle_id="demo",
+        metrics=[
+            MetricResult(
+                name="gripper_transition",
+                description="gripper transitions",
+                events=[
+                    MetricEvent(
+                        metric_name="gripper_transition",
+                        time_window=TimeWindow(1.0),
+                        value={"transition_direction": "closed_to_open"},
+                        severity=Severity.LOW,
+                        reason="gripper opened",
+                    )
+                ],
+            )
+        ],
+    )
+    selector = MetricEventSelector(
+        point_event_delta_sec=0.2,
+        min_segment_duration_sec=0.2,
+    )
+
+    proposals = selector.select(profile)
+
+    assert len(proposals) == 1
+    assert proposals[0].time_window.start_sec == 0.8
+    assert proposals[0].time_window.end_sec == 1.2
+    assert proposals[0].metadata["metric_names"] == ["gripper_transition"]

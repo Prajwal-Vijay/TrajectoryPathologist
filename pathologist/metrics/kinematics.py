@@ -310,6 +310,124 @@ class MotionSmoothnessMetric:
         )
 
 
+class VelocitySpikeMetric:
+    """Measured joint/state velocity spikes from explicit velocity streams."""
+
+    name = "velocity_spike"
+
+    def compute(self, context: MetricComputationContext) -> MetricResult:
+        stream = find_stream(
+            context.bundle,
+            [Modality.PROPRIOCEPTION, Modality.TELEMETRY],
+            preferred_names=["velocity", "qvel", "joint_velocity", "proprioception"],
+        )
+        timestamps, velocities = extract_vector_series(
+            stream,
+            ["qvel", "velocity", "velocities", "joint_velocity", "joint_velocities"],
+        )
+        if stream is None or len(velocities) < 2:
+            return MetricResult(
+                name=self.name,
+                description="Measured velocity norm spikes from explicit velocity observations.",
+                metadata={"available": False, "unavailable_reason": "requires at least two velocity samples"},
+            )
+
+        velocity_norms = [l2_norm(velocity) for velocity in velocities]
+        sample_timestamps = align_timestamps(timestamps, len(velocity_norms))
+        config = metric_config(context, self.name)
+        medium_percentile = float(metric_option(config, stream.metadata, "medium_percentile", 95))
+        high_percentile = float(metric_option(config, stream.metadata, "high_percentile", 99))
+        robust_medium_mad_multiplier = float(metric_option(config, stream.metadata, "robust_medium_mad_multiplier", 3.0))
+        robust_high_mad_multiplier = float(metric_option(config, stream.metadata, "robust_high_mad_multiplier", 6.0))
+        min_velocity_norm = float(metric_option(config, stream.metadata, "min_velocity_norm", 0.0))
+        min_region_duration_sec = float(metric_option(config, stream.metadata, "min_region_duration_sec", 0.0))
+
+        baseline_median = percentile(velocity_norms, 50) or 0.0
+        baseline_mad = median_absolute_deviation(velocity_norms)
+        p95 = percentile(velocity_norms, medium_percentile) or 0.0
+        p99 = percentile(velocity_norms, high_percentile) or p95
+        robust_medium_threshold = baseline_median + robust_medium_mad_multiplier * baseline_mad
+        robust_high_threshold = baseline_median + robust_high_mad_multiplier * baseline_mad
+        effective_p95 = max(p95, robust_medium_threshold, min_velocity_norm)
+        effective_p99 = max(p99, robust_high_threshold, effective_p95)
+
+        threshold = Threshold(
+            name="velocity_spike_intra_episode",
+            basis=ThresholdBasis.INTRA_EPISODE_ROBUST_STAT,
+            condition=ThresholdCondition(
+                operator=ThresholdOperator.GREATER_THAN,
+                threshold_value=effective_p95,
+                reference_statistic="max(velocity_norm_p95, median_plus_3mad, min_velocity_norm)",
+            ),
+            severity_bands=[
+                SeverityBand(severity=Severity.MEDIUM, lower=effective_p95, upper=effective_p99),
+                SeverityBand(severity=Severity.HIGH, lower=effective_p99),
+            ],
+            numeric_context={
+                "baseline_median": baseline_median,
+                "baseline_mad": baseline_mad,
+                "median_plus_3mad": robust_medium_threshold,
+                "median_plus_6mad": robust_high_threshold,
+                "episode_p95": p95,
+                "episode_p99": p99,
+                "medium_percentile": medium_percentile,
+                "high_percentile": high_percentile,
+                "min_velocity_norm": min_velocity_norm,
+                "min_region_duration_sec": min_region_duration_sec,
+                "effective_medium_threshold": effective_p95,
+                "effective_high_threshold": effective_p99,
+            },
+        )
+
+        regions = _above_threshold_regions(velocity_norms, sample_timestamps, effective_p95)
+        regions.sort(key=lambda region: region["peak_value"], reverse=True)
+        events = []
+        for region in regions:
+            if region["duration_sec"] < min_region_duration_sec:
+                continue
+            severity = Severity.HIGH if region["peak_value"] >= effective_p99 else Severity.MEDIUM
+            events.append(
+                MetricEvent(
+                    metric_name=self.name,
+                    time_window=TimeWindow(region["start_sec"], region["end_sec"]),
+                    value={
+                        "peak_velocity_norm": region["peak_value"],
+                        "mean_velocity_norm": region["mean_value"],
+                        "duration_sec": region["duration_sec"],
+                        "sample_count": region["sample_count"],
+                        "peak_timestamp_sec": region["peak_timestamp_sec"],
+                    },
+                    severity=severity,
+                    reason=(
+                        f"velocity norm peaked at {region['peak_value']:.4f}, exceeding "
+                        f"effective intra-episode threshold {effective_p95:.4f}"
+                    ),
+                    threshold=threshold,
+                )
+            )
+            if len(events) >= context.max_events_per_metric:
+                break
+
+        return MetricResult(
+            name=self.name,
+            description="Measured velocity norm over time; contiguous high-velocity regions are key-event candidates.",
+            source_modalities=[stream.modality],
+            unit="state_units_per_second",
+            samples=[
+                MetricSample(timestamp_sec=timestamp, value=value)
+                for timestamp, value in zip(sample_timestamps, velocity_norms)
+            ],
+            summary=summarize(velocity_norms),
+            thresholds=[threshold],
+            events=events,
+            display_hint="velocity_norm_timeseries",
+            metadata={
+                "available": True,
+                "stream_name": stream.name,
+            },
+        )
+
+
 class StallingMetric:
     """Fraction of the episode where robot motion is near zero."""
 
@@ -437,6 +555,33 @@ def _true_runs(values: list[bool]) -> list[tuple[int, int]]:
     if start is not None:
         runs.append((start, len(values) - 1))
     return runs
+
+
+def _above_threshold_regions(
+    values: list[float],
+    timestamps: list[float],
+    threshold: float,
+) -> list[dict[str, float | int]]:
+    regions: list[dict[str, float | int]] = []
+    above_threshold = [value >= threshold for value in values]
+    for start_index, end_index in _true_runs(above_threshold):
+        region_values = values[start_index:end_index + 1]
+        peak_value = max(region_values)
+        peak_offset = region_values.index(peak_value)
+        start_sec = timestamps[start_index]
+        end_sec = timestamps[end_index]
+        regions.append(
+            {
+                "start_sec": start_sec,
+                "end_sec": end_sec,
+                "duration_sec": max(0.0, end_sec - start_sec),
+                "sample_count": len(region_values),
+                "peak_value": peak_value,
+                "mean_value": sum(region_values) / len(region_values),
+                "peak_timestamp_sec": timestamps[start_index + peak_offset],
+            }
+        )
+    return regions
 
 
 def _extract_wrist_positions(stream) -> tuple[list[float], dict[str, list[list[float]]]]:

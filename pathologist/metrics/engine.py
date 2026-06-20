@@ -6,14 +6,19 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from pathologist.metrics.base import MetricComputationContext, MetricComputer
-from pathologist.metrics.gripper import GripperChatterMetric
+from pathologist.metrics.gripper import GripperChatterMetric, GripperTransitionMetric
 from pathologist.metrics.kinematics import (
     EndEffectorCartesianPathLengthMetric,
     JointPathLengthMetric,
     MotionSmoothnessMetric,
     StallingMetric,
+    VelocitySpikeMetric,
 )
-from pathologist.metrics.signals import ActionDistributionEntropyMetric, ActionRangeSaturationMetric
+from pathologist.metrics.signals import (
+    ActionDiscontinuityMetric,
+    ActionDistributionEntropyMetric,
+    ActionRangeSaturationMetric,
+)
 from pathologist.metrics.timing import TimestampRegularityMetric
 from pathologist.schemas.metrics import MetricProfile
 from pathologist.schemas.trajectory_bundle import TrajectoryBundle
@@ -25,11 +30,14 @@ def default_metric_computers() -> list[MetricComputer]:
     return [
         TimestampRegularityMetric(),
         ActionRangeSaturationMetric(),
+        ActionDiscontinuityMetric(),
         ActionDistributionEntropyMetric(),
         JointPathLengthMetric(),
         EndEffectorCartesianPathLengthMetric(),
         MotionSmoothnessMetric(),
+        VelocitySpikeMetric(),
         StallingMetric(),
+        GripperTransitionMetric(),
         GripperChatterMetric(),
     ]
 

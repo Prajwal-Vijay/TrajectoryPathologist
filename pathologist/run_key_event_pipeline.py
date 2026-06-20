@@ -52,6 +52,7 @@ def run_key_event_pipeline(
     metric_packet_context_steps = int(selector_config.get("metric_packet_context_steps", 10))
     visual_context_sec = float(selector_config.get("visual_context_sec", 1.0))
     max_frames_per_camera = int(selector_config.get("max_frames_per_camera", 5))
+    min_segment_duration_sec = float(selector_config.get("min_segment_duration_sec", 0.2))
     ignored_metric_names = selector_config.get("ignored_metric_names", ["timestamp_regularity"])
     if not isinstance(ignored_metric_names, list):
         ignored_metric_names = ["timestamp_regularity"]
@@ -76,6 +77,7 @@ def run_key_event_pipeline(
         visual_context_sec=visual_context_sec,
         max_frames_per_camera=max_frames_per_camera,
         metric_packet_context_steps=metric_packet_context_steps,
+        min_segment_duration_sec=min_segment_duration_sec,
     )
     debug_timeline_path = output_path / "timeline_debug.json"
     proposals = selector.select(

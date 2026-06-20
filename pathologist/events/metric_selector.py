@@ -63,6 +63,7 @@ class MetricEventSelector:
         visual_context_sec: float = 1.0,
         max_frames_per_camera: int = 5,
         metric_packet_context_steps: int = 10,
+        min_segment_duration_sec: float = 0.2,
     ) -> None:
         if point_event_delta_sec < 0:
             raise ValueError("point_event_delta_sec must be non-negative.")
@@ -74,12 +75,15 @@ class MetricEventSelector:
             raise ValueError("max_frames_per_camera must be positive.")
         if metric_packet_context_steps < 0:
             raise ValueError("metric_packet_context_steps must be non-negative.")
+        if min_segment_duration_sec < 0:
+            raise ValueError("min_segment_duration_sec must be non-negative.")
         self.point_event_delta_sec = point_event_delta_sec
         self.ignored_metric_names = ignored_metric_names or {"timestamp_regularity"}
         self.frame_stride_within_window = frame_stride_within_window
         self.visual_context_sec = visual_context_sec
         self.max_frames_per_camera = max_frames_per_camera
         self.metric_packet_context_steps = metric_packet_context_steps
+        self.min_segment_duration_sec = min_segment_duration_sec
 
     def select(
         self,
@@ -96,7 +100,10 @@ class MetricEventSelector:
         }
         normalized_events = self._normalize_metric_events(metric_lookup) # Expands the point metrics into windows
         metric_support_intervals = _merge_events_within_each_metric(normalized_events)
-        timeline_segments = _build_timeline_segments(metric_support_intervals)
+        timeline_segments = _build_timeline_segments(
+            metric_support_intervals,
+            min_segment_duration_sec=self.min_segment_duration_sec,
+        )
         ranked_segments = sorted(
             timeline_segments,
             key=lambda segment: (-segment.overlap_count, segment.start_sec),
@@ -229,6 +236,7 @@ class MetricEventSelector:
             "point_event_delta_sec": self.point_event_delta_sec,
             "visual_context_sec": self.visual_context_sec,
             "max_frames_per_camera": self.max_frames_per_camera,
+            "min_segment_duration_sec": self.min_segment_duration_sec,
             "metric_packet_context_steps": self.metric_packet_context_steps,
             "ignored_metric_names": sorted(self.ignored_metric_names),
             "normalized_metric_events": [
@@ -345,6 +353,7 @@ def _merge_events_within_each_metric(
 
 def _build_timeline_segments(
     metric_support_intervals: list[MetricSupportInterval],
+    min_segment_duration_sec: float,
 ) -> list[TimelineSegment]:
     """Build exact intersection intervals from metric-level support intervals."""
 
@@ -365,6 +374,9 @@ def _build_timeline_segments(
     segments: list[TimelineSegment] = []
     for start_sec, end_sec in zip(boundaries, boundaries[1:]):
         if end_sec <= start_sec:
+            continue
+
+        if (end_sec - start_sec) < min_segment_duration_sec:
             continue
         active_intervals = [
             interval

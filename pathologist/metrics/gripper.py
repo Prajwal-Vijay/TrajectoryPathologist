@@ -24,6 +24,103 @@ from pathologist.schemas.common import (
 from pathologist.schemas.metrics import MetricEvent, MetricResult, MetricSample
 
 
+class GripperTransitionMetric:
+    """Normal gripper open/close transitions used as semantic key-event triggers."""
+
+    name = "gripper_transition"
+
+    def compute(self, context: MetricComputationContext) -> MetricResult:
+        stream = find_stream(
+            context.bundle,
+            [Modality.GRIPPER, Modality.ACTION, Modality.PROPRIOCEPTION],
+            preferred_names=["gripper", "action", "proprioception"],
+        )
+        timestamps, grippers = extract_vector_series(
+            stream,
+            ["gripper", "grippers", "proprioception_grippers", "gripper_state"],
+        )
+        if stream is None or len(grippers) < 2:
+            return MetricResult(
+                name=self.name,
+                description="Detects normal gripper open/close transitions.",
+                metadata={"available": False, "unavailable_reason": "requires at least two gripper samples"},
+            )
+
+        config = metric_config(context, self.name)
+        threshold_value = float(metric_option(config, stream.metadata, "gripper_binary_threshold", 0.5))
+        low_state_label = str(metric_option(config, stream.metadata, "low_state_label", "open"))
+        high_state_label = str(metric_option(config, stream.metadata, "high_state_label", "closed"))
+        binary = [
+            [1 if value >= threshold_value else 0 for value in sample]
+            for sample in grippers
+        ]
+        sample_timestamps = align_timestamps(timestamps, len(binary))
+
+        samples = []
+        events = []
+        for index in range(1, len(binary)):
+            width = min(len(binary[index]), len(binary[index - 1]))
+            changed_dims = [
+                dim
+                for dim in range(width)
+                if binary[index][dim] != binary[index - 1][dim]
+            ]
+            samples.append(MetricSample(timestamp_sec=sample_timestamps[index], value=len(changed_dims)))
+            if not changed_dims:
+                continue
+
+            transition_by_dim = {
+                str(dim): _transition_label(
+                    binary[index - 1][dim],
+                    binary[index][dim],
+                    low_state_label,
+                    high_state_label,
+                )
+                for dim in changed_dims
+            }
+            if len(set(transition_by_dim.values())) == 1:
+                transition_direction = next(iter(transition_by_dim.values()))
+            else:
+                transition_direction = "mixed"
+            events.append(
+                MetricEvent(
+                    metric_name=self.name,
+                    time_window=TimeWindow(sample_timestamps[index]),
+                    value={
+                        "changed_dimensions": changed_dims,
+                        "previous_state": binary[index - 1][:width],
+                        "current_state": binary[index][:width],
+                        "transition_by_dimension": transition_by_dim,
+                        "transition_direction": transition_direction,
+                        "low_state_label": low_state_label,
+                        "high_state_label": high_state_label,
+                    },
+                    severity=Severity.LOW,
+                    reason=(
+                        f"gripper transition {transition_direction} on dimension(s) {changed_dims}"
+                    ),
+                )
+            )
+
+        return MetricResult(
+            name=self.name,
+            description="Detects normal gripper open/close transitions as key-event candidates.",
+            source_modalities=[stream.modality],
+            unit="changed_dimensions",
+            samples=samples,
+            summary=summarize([float(sample.value) for sample in samples]),
+            events=events[: context.max_events_per_metric],
+            metadata={
+                "available": True,
+                "stream_name": stream.name,
+                "binary_threshold": threshold_value,
+                "low_state_label": low_state_label,
+                "high_state_label": high_state_label,
+                "total_transition_steps": len(events),
+            },
+        )
+
+
 class GripperChatterMetric:
     """Rapid gripper open/close transitions indicating noisy teleoperation."""
 
@@ -79,7 +176,7 @@ class GripperChatterMetric:
         # Keep an absolute floor so a mostly quiet trajectory does not flag
         # its weakest nonzero bin only because it is high relative to itself.
         min_chatter_rate = float(metric_option(config, stream.metadata, "min_chatter_rate", 2.0))
-        min_chatter_transitions = int(metric_option(config, stream.metadata, "min_chatter_transitions", 2))
+        min_chatter_transitions = int(metric_option(config, stream.metadata, "min_chatter_transitions", 4))
         
         medium_percentile = float(metric_option(config, stream.metadata, "medium_percentile", 95))
         high_percentile = float(metric_option(config, stream.metadata, "high_percentile", 99))
@@ -188,3 +285,16 @@ def _transition_bins(
         transition_count = sum(transitions[start_index:end_index])
         rates.append((start_time, end_time, transition_count, transition_count / duration))
     return rates
+
+
+def _transition_label(
+    previous_state: int,
+    current_state: int,
+    low_state_label: str,
+    high_state_label: str,
+) -> str:
+    if previous_state == 0 and current_state == 1:
+        return f"{low_state_label}_to_{high_state_label}"
+    if previous_state == 1 and current_state == 0:
+        return f"{high_state_label}_to_{low_state_label}"
+    return "unchanged"

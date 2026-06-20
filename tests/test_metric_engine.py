@@ -38,6 +38,10 @@ def test_metric_engine_computes_default_profile() -> None:
         {"gripper": [record["action"][-1]]}
         for record in actions
     ]
+    velocities = [
+        {"qvel": [0.1 + index * 0.01, 0.0, 0.0]}
+        for index in range(20)
+    ]
     telemetry = [
         {
             "wrist_poses": {
@@ -65,6 +69,12 @@ def test_metric_engine_computes_default_profile() -> None:
                 records=proprioception,
             ),
             ModalityStream(
+                name="qvel",
+                modality=Modality.PROPRIOCEPTION,
+                timestamps_sec=timestamps,
+                records=velocities,
+            ),
+            ModalityStream(
                 name="gripper",
                 modality=Modality.GRIPPER,
                 timestamps_sec=timestamps,
@@ -84,10 +94,13 @@ def test_metric_engine_computes_default_profile() -> None:
     metric_names = {metric.name for metric in profile.metrics}
     assert "timestamp_regularity" in metric_names
     assert "action_range_saturation" in metric_names
+    assert "action_discontinuity" in metric_names
     assert "action_distribution_entropy" in metric_names
     assert "joint_path_length" in metric_names
     assert "end_effector_cartesian_path_length" in metric_names
     assert "motion_smoothness" in metric_names
+    assert "velocity_spike" in metric_names
     assert "stalling" in metric_names
+    assert "gripper_transition" in metric_names
     assert "gripper_chatter" in metric_names
     assert profile.bundle_id == "synthetic"

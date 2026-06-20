@@ -159,6 +159,21 @@ def test_metric_grounding_cards_preserve_numeric_grounding() -> None:
     assert "grasp failed unless visual evidence supports it" in cards[0].forbidden_semantic_claims
 
 
+def test_gripper_transition_grounding_card_exposes_transition_direction() -> None:
+    event = MetricEvent(
+        metric_name="gripper_transition",
+        time_window=TimeWindow(1.0),
+        value={"transition_direction": "closed_to_open"},
+        severity=Severity.LOW,
+        reason="gripper transition closed_to_open",
+    )
+
+    cards = build_metric_grounding_cards([event])
+
+    assert "closed_to_open" in cards[0].metric_interpretation
+    assert "gripper transition: closed_to_open" in cards[0].allowed_metric_claims
+
+
 def test_integration_payload_uses_visual_label_and_metric_cards() -> None:
     proposal = KeyEventProposal(
         event_id="demo_metric_overlap_001",

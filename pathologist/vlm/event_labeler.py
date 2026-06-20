@@ -272,8 +272,8 @@ def build_metric_grounding_cards(events: list[MetricEvent]) -> list[MetricGround
             severity=str(event.severity),
             threshold_context=_threshold_context(event),
             relative_level=_relative_level(event),
-            metric_interpretation=_metric_interpretation(event.metric_name),
-            allowed_metric_claims=_allowed_metric_claims(event.metric_name),
+            metric_interpretation=_metric_interpretation(event),
+            allowed_metric_claims=_allowed_metric_claims(event),
             forbidden_semantic_claims=_forbidden_semantic_claims(),
         )
         for index, event in enumerate(events)
@@ -305,7 +305,8 @@ def _relative_level(event: MetricEvent) -> str:
     return f"{severity}_metric_trigger_relative_to_{threshold.name}"
 
 
-def _metric_interpretation(metric_name: str) -> str:
+def _metric_interpretation(event: MetricEvent) -> str:
+    metric_name = event.metric_name
     if metric_name == "motion_smoothness":
         return "sudden or rough robot motion; possible dynamic disturbance"
     if metric_name == "gripper_chatter":
@@ -316,10 +317,16 @@ def _metric_interpretation(metric_name: str) -> str:
         return "action command reached configured control bounds"
     if metric_name == "action_distribution_entropy":
         return "unusual action distribution for review"
+    if metric_name == "gripper_transition":
+        direction = _gripper_transition_direction(event)
+        if direction:
+            return f"normal gripper state transition ({direction}); semantic manipulation milestone"
+        return "normal gripper state transition; semantic manipulation milestone"
     return "metric anomaly selected this event for review"
 
 
-def _allowed_metric_claims(metric_name: str) -> list[str]:
+def _allowed_metric_claims(event: MetricEvent) -> list[str]:
+    metric_name = event.metric_name
     if metric_name == "motion_smoothness":
         return ["rough motion", "jerk spike", "dynamic anomaly", "possible impact or abrupt correction"]
     if metric_name == "gripper_chatter":
@@ -328,7 +335,21 @@ def _allowed_metric_claims(metric_name: str) -> list[str]:
         return ["stalling", "pause", "low progress in telemetry"]
     if metric_name == "action_range_saturation":
         return ["control saturation", "action at configured bounds"]
+    if metric_name == "gripper_transition":
+        direction = _gripper_transition_direction(event)
+        claims = ["gripper opened", "gripper closed", "possible grasp/release phase transition"]
+        if direction:
+            claims.insert(0, f"gripper transition: {direction}")
+        return claims
+    
     return ["metric-triggered anomaly", "review-worthy telemetry pattern"]
+
+
+def _gripper_transition_direction(event: MetricEvent) -> str | None:
+    if not isinstance(event.value, dict):
+        return None
+    direction = event.value.get("transition_direction")
+    return direction if isinstance(direction, str) and direction else None
 
 
 def _forbidden_semantic_claims() -> list[str]:
