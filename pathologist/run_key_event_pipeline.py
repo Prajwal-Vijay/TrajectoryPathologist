@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from pathologist.adapters.roboeval_bundle import RoboEvalBundleAdapter
+from pathologist.adapters.vifailback_bundle import ViFailBackBundleAdapter
 from pathologist.config import config_section, load_pipeline_config
 from pathologist.events import MetricEventSelector
 from pathologist.metrics import MetricEngine
@@ -21,6 +22,12 @@ def run_key_event_pipeline(
     task_contract: TaskContract | None = None,
     task_contract_path: str | Path | None = None,
     config_path: str | Path | None = None,
+    adapter: str = "roboeval",
+    video_path: str | Path | None = None,
+    frame_cache_dir: str | Path | None = None,
+    video_sample_fps: float = 2.0,
+    hdf5_fps: float = 25.0,
+    default_control_hz: float = 50.0,
     point_event_delta_sec: float | None = None,
     frame_stride_within_window: int | None = None,
     max_events_to_label: int | None = None,
@@ -31,11 +38,16 @@ def run_key_event_pipeline(
     """Run the current key-event pipeline on one trajectory folder."""
 
     bundle_path = Path(bundle_dir).expanduser().resolve()
-    output_path = Path(output_dir).expanduser().resolve() if output_dir else bundle_path / "pathologist_outputs"
+    output_path = (
+        Path(output_dir).expanduser().resolve()
+        if output_dir
+        else _default_output_path(bundle_path)
+    )
     output_path.mkdir(parents=True, exist_ok=True)
 
-    resolved_task_contract = task_contract or _load_task_contract(task_contract_path, bundle_path)
-    config = load_pipeline_config(config_path=config_path, bundle_path=bundle_path)
+    config_bundle_path = bundle_path if bundle_path.is_dir() else bundle_path.parent
+    resolved_task_contract = task_contract or _load_task_contract(task_contract_path, config_bundle_path)
+    config = load_pipeline_config(config_path=config_path, bundle_path=config_bundle_path)
     selector_config = config_section(config, "selector")
     labeling_config = config_section(config, "labeling")
 
@@ -53,9 +65,17 @@ def run_key_event_pipeline(
     visual_context_sec = float(selector_config.get("visual_context_sec", 1.0))
     max_frames_per_camera = int(selector_config.get("max_frames_per_camera", 5))
     min_segment_duration_sec = float(selector_config.get("min_segment_duration_sec", 0.2))
+    same_metric_merge_gap_sec = float(selector_config.get("same_metric_merge_gap_sec", 0.25))
+    proposal_merge_gap_sec = float(selector_config.get("proposal_merge_gap_sec", 0.25))
     ignored_metric_names = selector_config.get("ignored_metric_names", ["timestamp_regularity"])
     if not isinstance(ignored_metric_names, list):
         ignored_metric_names = ["timestamp_regularity"]
+    same_metric_merge_gap_excluded_metric_names = selector_config.get(
+        "same_metric_merge_gap_excluded_metric_names",
+        ["gripper_transition"],
+    )
+    if not isinstance(same_metric_merge_gap_excluded_metric_names, list):
+        same_metric_merge_gap_excluded_metric_names = ["gripper_transition"]
 
     resolved_max_events_to_label = (
         int(max_events_to_label)
@@ -64,7 +84,16 @@ def run_key_event_pipeline(
     )
     resolved_openai_model = openai_model or labeling_config.get("openai_model")
 
-    bundle = RoboEvalBundleAdapter().load(bundle_path, task_contract=resolved_task_contract)
+    bundle = _load_bundle(
+        adapter=adapter,
+        bundle_path=bundle_path,
+        video_path=video_path,
+        task_contract=resolved_task_contract,
+        frame_cache_dir=frame_cache_dir or output_path / "frame_cache",
+        video_sample_fps=video_sample_fps,
+        hdf5_fps=hdf5_fps,
+        default_control_hz=default_control_hz,
+    )
 
     metric_profile = MetricEngine(config=config).compute(bundle)
     metric_profile_path = output_path / "metric_profile.json"
@@ -78,6 +107,12 @@ def run_key_event_pipeline(
         max_frames_per_camera=max_frames_per_camera,
         metric_packet_context_steps=metric_packet_context_steps,
         min_segment_duration_sec=min_segment_duration_sec,
+        same_metric_merge_gap_sec=same_metric_merge_gap_sec,
+        same_metric_merge_gap_excluded_metric_names={
+            str(name)
+            for name in same_metric_merge_gap_excluded_metric_names
+        },
+        proposal_merge_gap_sec=proposal_merge_gap_sec,
     )
     debug_timeline_path = output_path / "timeline_debug.json"
     proposals = selector.select(
@@ -147,6 +182,8 @@ def run_key_event_pipeline(
 
     run_summary = {
         "bundle_dir": str(bundle_path),
+        "adapter": adapter,
+        "video_path": str(Path(video_path).expanduser().resolve()) if video_path is not None else None,
         "output_dir": str(output_path),
         "bundle_id": bundle.bundle_id,
         "proposal_count": len(proposals),
@@ -167,7 +204,42 @@ def run_key_event_pipeline(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the metric-first key event pipeline.")
-    parser.add_argument("bundle_dir", help="Path to the RoboEval-style trajectory folder.")
+    parser.add_argument(
+        "bundle_dir",
+        help="Path to the RoboEval-style trajectory folder, or a ViFailBack .h5 episode when --adapter vifailback is used.",
+    )
+    parser.add_argument(
+        "--adapter",
+        choices=["roboeval", "vifailback"],
+        default="roboeval",
+        help="Input adapter to use.",
+    )
+    parser.add_argument(
+        "--video-path",
+        help="Optional fallback video/image/frame directory for --adapter vifailback when HDF5 RGB frames are unavailable.",
+    )
+    parser.add_argument(
+        "--frame-cache-dir",
+        help="Directory for materialized ViFailBack HDF5/video frames. Defaults to output_dir/frame_cache.",
+    )
+    parser.add_argument(
+        "--video-sample-fps",
+        type=float,
+        default=2.0,
+        help="Frame extraction rate for ViFailBack videos.",
+    )
+    parser.add_argument(
+        "--hdf5-fps",
+        type=float,
+        default=25.0,
+        help="FPS used to timestamp ViFailBack HDF5 RGB/telemetry samples. Dataset visualization default is 25.",
+    )
+    parser.add_argument(
+        "--default-control-hz",
+        type=float,
+        default=50.0,
+        help="Fallback control rate for ViFailBack HDF5 telemetry if no video frames are available.",
+    )
     parser.add_argument(
         "--task-contract",
         dest="task_contract_path",
@@ -220,6 +292,12 @@ def main() -> None:
         output_dir=args.output_dir,
         task_contract_path=args.task_contract_path,
         config_path=args.config_path,
+        adapter=args.adapter,
+        video_path=args.video_path,
+        frame_cache_dir=args.frame_cache_dir,
+        video_sample_fps=args.video_sample_fps,
+        hdf5_fps=args.hdf5_fps,
+        default_control_hz=args.default_control_hz,
         point_event_delta_sec=args.point_event_delta_sec,
         frame_stride_within_window=args.frame_stride_within_window,
         max_events_to_label=args.max_events_to_label,
@@ -227,6 +305,37 @@ def main() -> None:
         skip_labeling=args.skip_labeling,
     )
     print(json.dumps(summary, indent=2))
+
+
+def _load_bundle(
+    adapter: str,
+    bundle_path: Path,
+    video_path: str | Path | None,
+    task_contract: TaskContract,
+    frame_cache_dir: str | Path | None,
+    video_sample_fps: float,
+    hdf5_fps: float,
+    default_control_hz: float,
+):
+    if adapter == "roboeval":
+        return RoboEvalBundleAdapter().load(bundle_path, task_contract=task_contract)
+    if adapter == "vifailback":
+        return ViFailBackBundleAdapter().load(
+            h5_path=bundle_path,
+            video_path=video_path,
+            task_contract=task_contract,
+            frame_cache_dir=frame_cache_dir,
+            video_sample_fps=video_sample_fps,
+            hdf5_fps=hdf5_fps,
+            default_control_hz=default_control_hz,
+        )
+    raise ValueError(f"Unknown adapter: {adapter}")
+
+
+def _default_output_path(bundle_path: Path) -> Path:
+    if bundle_path.is_dir():
+        return bundle_path / "pathologist_outputs"
+    return bundle_path.parent / f"{bundle_path.stem}_pathologist_outputs"
 
 
 def _load_task_contract(
@@ -246,6 +355,10 @@ def _load_task_contract(
         task_description=f"Robot manipulation trajectory for {task_name}.",
         success_criteria="Complete the intended manipulation successfully and stably.",
         failure_criteria="Fail, regress, or show suboptimal behavior during the intended manipulation.",
+        extra_context={
+            "task_contract_source": "synthetic_default",
+            "outcome_reasoning_allowed": False,
+        },
     )
 
 

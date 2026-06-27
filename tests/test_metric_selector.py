@@ -212,6 +212,159 @@ def test_metric_selector_unions_same_metric_events_before_intersection(tmp_path:
     ]
 
 
+def test_metric_selector_merges_nearby_same_metric_events_except_gripper_transition(
+    tmp_path: Path | None = None,
+) -> None:
+    output_dir = tmp_path or Path("/tmp/pathologist_metric_selector_same_metric_gap_test")
+    debug_path = output_dir / "timeline_debug.json"
+    profile = MetricProfile(
+        bundle_id="demo",
+        metrics=[
+            MetricResult(
+                name="motion_smoothness",
+                description="jerk spikes",
+                events=[
+                    MetricEvent(
+                        metric_name="motion_smoothness",
+                        time_window=TimeWindow(10.0),
+                        value=10.0,
+                        severity=Severity.HIGH,
+                        reason="first jerk spike",
+                    ),
+                    MetricEvent(
+                        metric_name="motion_smoothness",
+                        time_window=TimeWindow(10.5),
+                        value=11.0,
+                        severity=Severity.HIGH,
+                        reason="nearby jerk spike",
+                    ),
+                ],
+            ),
+            MetricResult(
+                name="gripper_transition",
+                description="normal gripper transitions",
+                events=[
+                    MetricEvent(
+                        metric_name="gripper_transition",
+                        time_window=TimeWindow(10.0),
+                        value={"transition_direction": "closed_to_open"},
+                        severity=Severity.LOW,
+                        reason="gripper opened",
+                    ),
+                    MetricEvent(
+                        metric_name="gripper_transition",
+                        time_window=TimeWindow(10.5),
+                        value={"transition_direction": "open_to_closed"},
+                        severity=Severity.LOW,
+                        reason="gripper closed",
+                    ),
+                ],
+            ),
+        ],
+    )
+
+    selector = MetricEventSelector(
+        point_event_delta_sec=0.1,
+        min_segment_duration_sec=0.0,
+        same_metric_merge_gap_sec=0.35,
+        same_metric_merge_gap_excluded_metric_names={"gripper_transition"},
+        proposal_merge_gap_sec=0.0,
+    )
+    selector.select(profile, debug_timeline_path=debug_path)
+
+    payload = json.loads(debug_path.read_text(encoding="utf-8"))
+    motion_support = [
+        interval
+        for interval in payload["metric_support_intervals"]
+        if interval["metric_name"] == "motion_smoothness"
+    ]
+    gripper_support = [
+        interval
+        for interval in payload["metric_support_intervals"]
+        if interval["metric_name"] == "gripper_transition"
+    ]
+
+    assert len(motion_support) == 1
+    assert round(motion_support[0]["start_sec"], 3) == 9.9
+    assert round(motion_support[0]["end_sec"], 3) == 10.6
+    assert motion_support[0]["member_event_ids"] == [
+        "motion_smoothness_event_000",
+        "motion_smoothness_event_001",
+    ]
+    assert len(gripper_support) == 2
+
+
+def test_metric_selector_merges_nearby_proposals_with_same_metric_set() -> None:
+    profile = MetricProfile(
+        bundle_id="demo",
+        metrics=[
+            MetricResult(
+                name="motion_smoothness",
+                description="jerk spikes",
+                events=[
+                    MetricEvent(
+                        metric_name="motion_smoothness",
+                        time_window=TimeWindow(1.0, 1.2),
+                        value=10.0,
+                        severity=Severity.HIGH,
+                        reason="first jerk region",
+                    ),
+                    MetricEvent(
+                        metric_name="motion_smoothness",
+                        time_window=TimeWindow(1.4, 1.6),
+                        value=11.0,
+                        severity=Severity.HIGH,
+                        reason="nearby jerk region",
+                    ),
+                ],
+            ),
+            MetricResult(
+                name="action_discontinuity",
+                description="action jumps",
+                events=[
+                    MetricEvent(
+                        metric_name="action_discontinuity",
+                        time_window=TimeWindow(1.05, 1.15),
+                        value=1.0,
+                        severity=Severity.MEDIUM,
+                        reason="first action jump",
+                    ),
+                    MetricEvent(
+                        metric_name="action_discontinuity",
+                        time_window=TimeWindow(1.45, 1.55),
+                        value=1.2,
+                        severity=Severity.MEDIUM,
+                        reason="nearby action jump",
+                    ),
+                ],
+            ),
+        ],
+    )
+    selector = MetricEventSelector(
+        point_event_delta_sec=0.0,
+        min_segment_duration_sec=0.0,
+        same_metric_merge_gap_sec=0.0,
+        proposal_merge_gap_sec=0.35,
+    )
+
+    proposals = selector.select(profile)
+
+    merged_overlap_proposal = proposals[0]
+    assert merged_overlap_proposal.time_window.start_sec == 1.05
+    assert merged_overlap_proposal.time_window.end_sec == 1.55
+    assert merged_overlap_proposal.metadata["overlap_metric_count"] == 2
+    assert merged_overlap_proposal.metadata["metric_names"] == [
+        "action_discontinuity",
+        "motion_smoothness",
+    ]
+    assert merged_overlap_proposal.metadata["member_event_ids"] == [
+        "action_discontinuity_event_000",
+        "action_discontinuity_event_001",
+        "motion_smoothness_event_000",
+        "motion_smoothness_event_001",
+    ]
+
+
 def test_metric_selector_attaches_visual_context_frames() -> None:
     profile = MetricProfile(
         bundle_id="demo",

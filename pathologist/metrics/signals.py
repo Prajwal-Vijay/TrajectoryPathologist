@@ -257,8 +257,25 @@ class ActionDiscontinuityMetric:
             )
 
         config = metric_config(context, self.name)
-        ignored_dimensions = _int_list(metric_option(config, stream.metadata, "ignored_dimensions", []))
+        configured_ignored_dimensions = _int_list(metric_option(config, stream.metadata, "ignored_dimensions", []))
+        action_width = max((len(action) for action in actions), default=0)
+        ignored_dimensions = [
+            dimension
+            for dimension in configured_ignored_dimensions
+            if 0 <= dimension < action_width
+        ]
+        ignored_dimensions_out_of_range = [
+            dimension
+            for dimension in configured_ignored_dimensions
+            if dimension not in ignored_dimensions
+        ]
         ignored_dimension_set = set(ignored_dimensions)
+        source_gripper_indices_removed = _int_list(
+            stream.metadata.get(
+                "source_gripper_indices_removed",
+                stream.metadata.get("gripper_indices_removed_from_state_action", []),
+            )
+        )
 
         deltas = []
         max_dim_deltas = []
@@ -343,6 +360,11 @@ class ActionDiscontinuityMetric:
                             "previous_timestamp_sec": timestamps[index],
                             "current_timestamp_sec": sample_timestamps[index],
                             "ignored_dimensions": ignored_dimensions,
+                            "configured_ignored_dimensions": configured_ignored_dimensions,
+                            "ignored_dimensions_out_of_range": ignored_dimensions_out_of_range,
+                            "source_gripper_indices_removed": source_gripper_indices_removed,
+                            "metric_action_width": action_width,
+                            "raw_action_width": stream.metadata.get("raw_action_width"),
                         },
                         severity=severity,
                         reason=(
@@ -370,6 +392,11 @@ class ActionDiscontinuityMetric:
                 "available": True,
                 "stream_name": stream.name,
                 "ignored_dimensions": ignored_dimensions,
+                "configured_ignored_dimensions": configured_ignored_dimensions,
+                "ignored_dimensions_out_of_range": ignored_dimensions_out_of_range,
+                "source_gripper_indices_removed": source_gripper_indices_removed,
+                "metric_action_width": action_width,
+                "raw_action_width": stream.metadata.get("raw_action_width"),
             },
         )
 

@@ -141,6 +141,64 @@ def test_event_label_payload_contains_task_and_proposal_context() -> None:
     assert "threshold" not in serialized_payload
 
 
+def test_no_task_contract_disables_outcome_reasoning_in_payloads() -> None:
+    proposal = KeyEventProposal(
+        event_id="demo_metric_overlap_001",
+        time_window=TimeWindow(1.0, 1.2),
+        source=EventProposalSource.METRIC_TRIGGER,
+        trigger_reason="1 metric overlaps",
+        metric_events=[
+            MetricEvent(
+                metric_name="motion_smoothness",
+                time_window=TimeWindow(1.1),
+                value=25.0,
+                severity=Severity.HIGH,
+                reason="jerk norm exceeded p95",
+            )
+        ],
+    )
+    task_contract = TaskContract(
+        task_name="Generic manipulation",
+        task_description="Robot manipulation trajectory.",
+        success_criteria="Complete the intended manipulation successfully and stably.",
+        failure_criteria="Fail, regress, or show suboptimal behavior during the intended manipulation.",
+        extra_context={
+            "task_contract_source": "synthetic_default",
+            "outcome_reasoning_allowed": False,
+        },
+    )
+    visual_label = VisualEventLabel(
+        event_id=proposal.event_id,
+        visual_observation="The object is visibly tilted.",
+        phase="manipulation",
+        event_type="object_tilt",
+        objects_involved=["object"],
+        contact_or_grasp_state="one gripper appears in contact",
+        progress_assessment=ProgressAssessment.UNCERTAIN.value,
+        visible_pathology_labels=["tilt"],
+        visual_evidence_ids=["frame_000"],
+        uncertainty_notes=[],
+    )
+    cards = build_metric_grounding_cards(proposal.metric_events)
+
+    visual_payload = build_visual_label_payload(proposal, task_contract)
+    integration_payload = build_evidence_integration_payload(
+        proposal=proposal,
+        task_contract=task_contract,
+        visual_label=visual_label,
+        metric_grounding_cards=cards,
+    )
+
+    for payload in (visual_payload, integration_payload):
+        assert payload["task_context_status"]["outcome_reasoning_allowed"] is False
+        assert payload["task_contract"]["success_criteria"] is None
+        assert payload["task_contract"]["failure_criteria"] is None
+        assert "Set progress_assessment to uncertain" in payload["instructions"]
+        serialized_payload = str(payload)
+        assert "Complete the intended manipulation successfully and stably" not in serialized_payload
+        assert "Fail, regress, or show suboptimal behavior" not in serialized_payload
+
+
 def test_metric_grounding_cards_preserve_numeric_grounding() -> None:
     event = MetricEvent(
         metric_name="motion_smoothness",

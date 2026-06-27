@@ -82,6 +82,10 @@ def build_visual_label_payload(
 ) -> dict[str, Any]:
     """Build a visual-only payload with no metric values, names, thresholds, or severity."""
 
+    task_context_status = _task_context_status(task_contract)
+    outcome_reasoning_allowed = task_context_status["outcome_reasoning_allowed"]
+    outcome_instruction = _outcome_reasoning_instruction(outcome_reasoning_allowed)
+
     return {
         "instructions": (
             "Interpret only the visible image evidence for this selected robot trajectory window. "
@@ -90,8 +94,8 @@ def build_visual_label_payload(
             "Compare the first, middle, and last frames before deciding whether the scene is unchanged. "
             "Explicitly look for gripper open/close changes, one manipulator releasing a handle, "
             "loss or gain of contact, and object motion across the frame sequence. "
-            "Judge visible task phase, grasp/contact state, object state, and progress/regression "
-            "only from frames. "
+            "Judge visible task phase, grasp/contact state, and object state only from frames. "
+            f"{outcome_instruction} "
             "Use uncertain only when the relevant object/contact state is occluded, outside the "
             "frame, or genuinely visually ambiguous. If the object is visibly held, grasped, "
             "released, tilted, dropped, or stable, state that visual observation directly."
@@ -113,7 +117,8 @@ def build_visual_label_payload(
             "visual_evidence_ids": "list of visual evidence IDs used",
             "uncertainty_notes": "list of uncertainty notes",
         },
-        "task_contract": _jsonable(task_contract.to_dict()),
+        "task_context_status": task_context_status,
+        "task_contract": _task_contract_payload(task_contract, outcome_reasoning_allowed),
         "proposal": {
             "event_id": proposal.event_id,
             "time_window": _time_window_to_dict(proposal.time_window),
@@ -143,14 +148,20 @@ def build_evidence_integration_payload(
 ) -> dict[str, Any]:
     """Build a text-only integration payload from visual semantics and metric cards."""
 
+    task_context_status = _task_context_status(task_contract)
+    outcome_reasoning_allowed = task_context_status["outcome_reasoning_allowed"]
+    outcome_instruction = _outcome_reasoning_instruction(outcome_reasoning_allowed)
+
     return {
         "instructions": (
             "Integrate visual evidence and metric grounding for one robot trajectory event. "
             "The visual label is authoritative for visible grasp/contact, object state, and "
-            "task progress. Metric cards are authoritative for numeric motion/control anomalies. "
+            "task progress only when a real task contract is provided. Metric cards are authoritative "
+            "for numeric motion/control anomalies. "
             "High metric severity alone cannot imply failure, grasp loss, object drop, or regression. "
             "Use metric cards to numerically ground why the event is notable. If visual and metric "
-            "evidence disagree, state the disagreement clearly instead of forcing a failure label."
+            "evidence disagree, state the disagreement clearly instead of forcing a failure label. "
+            f"{outcome_instruction}"
         ),
         "output_schema": {
             "visual_observation": "visual observation copied or refined from the visual label",
@@ -171,7 +182,8 @@ def build_evidence_integration_payload(
             "explanation": "short explanation integrating visual label and numeric metric cards",
             "uncertainty_notes": "list of uncertainty notes",
         },
-        "task_contract": _jsonable(task_contract.to_dict()),
+        "task_context_status": task_context_status,
+        "task_contract": _task_contract_payload(task_contract, outcome_reasoning_allowed),
         "proposal": {
             "event_id": proposal.event_id,
             "time_window": _time_window_to_dict(proposal.time_window),
@@ -424,6 +436,67 @@ def _progress_assessment(value: Any) -> ProgressAssessment | str:
         if value in allowed:
             return value
     return ProgressAssessment.UNCERTAIN
+
+
+def _task_context_status(task_contract: TaskContract) -> dict[str, Any]:
+    outcome_reasoning_allowed = _outcome_reasoning_allowed(task_contract)
+    return {
+        "outcome_reasoning_allowed": outcome_reasoning_allowed,
+        "has_explicit_task_contract": outcome_reasoning_allowed,
+        "reason": (
+            "explicit task success/failure criteria were provided"
+            if outcome_reasoning_allowed
+            else "no informative task contract was provided; do not infer task success, failure, progress, or regression"
+        ),
+    }
+
+
+def _outcome_reasoning_allowed(task_contract: TaskContract) -> bool:
+    extra_context = task_contract.extra_context or {}
+    if extra_context.get("outcome_reasoning_allowed") is False:
+        return False
+    if extra_context.get("task_contract_source") == "synthetic_default":
+        return False
+
+    generic_success = "complete the intended manipulation successfully and stably"
+    generic_failure = "fail, regress, or show suboptimal behavior during the intended manipulation"
+    success_criteria = task_contract.success_criteria.strip().lower()
+    failure_criteria = task_contract.failure_criteria.strip().lower()
+    if success_criteria == generic_success and failure_criteria == generic_failure:
+        return False
+    return bool(success_criteria and failure_criteria)
+
+
+def _outcome_reasoning_instruction(outcome_reasoning_allowed: bool) -> str:
+    if outcome_reasoning_allowed:
+        return (
+            "Because explicit task criteria are provided, you may assess progress, regression, "
+            "success, or failure only when the visual/metric evidence supports that assessment."
+        )
+    return (
+        "No informative task contract is provided. Set progress_assessment to uncertain. "
+        "Do not claim the event is a task success, task failure, progress toward the goal, "
+        "or movement away from the goal. Describe only visible state changes and numeric "
+        "metric anomalies."
+    )
+
+
+def _task_contract_payload(
+    task_contract: TaskContract,
+    outcome_reasoning_allowed: bool,
+) -> dict[str, Any]:
+    if outcome_reasoning_allowed:
+        return _jsonable(task_contract.to_dict())
+    return {
+        "task_name": task_contract.task_name,
+        "task_description": task_contract.task_description,
+        "success_criteria": None,
+        "failure_criteria": None,
+        "objects_of_interest": list(task_contract.objects_of_interest),
+        "known_failure_cases": [],
+        "subtask_phases": list(task_contract.subtask_phases),
+        "note": "No informative task contract was provided; task outcome/progress reasoning is disabled.",
+    }
 
 
 def _required_string(value: Any, field_name: str) -> str:

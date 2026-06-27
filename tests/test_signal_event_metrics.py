@@ -77,6 +77,52 @@ def test_action_discontinuity_can_ignore_gripper_dimensions() -> None:
     assert all(event.value["max_changed_dimension"] != 2 for event in result.events)
 
 
+def test_action_discontinuity_reports_out_of_range_configured_ignored_dimensions() -> None:
+    timestamps = [index * 0.05 for index in range(6)]
+    records = [
+        {"action": [0.0, 0.0, 0.0]},
+        {"action": [0.1, 0.0, 0.0]},
+        {"action": [0.2, 0.0, 0.0]},
+        {"action": [5.0, 0.0, 0.0]},
+        {"action": [5.1, 0.0, 0.0]},
+        {"action": [5.2, 0.0, 0.0]},
+    ]
+    bundle = TrajectoryBundle(
+        bundle_id="adapter-removed-grippers",
+        source_format=BundleFormat.CUSTOM,
+        streams=[
+            ModalityStream(
+                name="action",
+                modality=Modality.ACTION,
+                timestamps_sec=timestamps,
+                records=records,
+                metadata={
+                    "raw_action_width": 14,
+                    "metric_action_width": 12,
+                    "source_gripper_indices_removed": [6, 13],
+                },
+            )
+        ],
+    )
+
+    result = ActionDiscontinuityMetric().compute(
+        MetricComputationContext(
+            bundle=bundle,
+            config={"metrics": {"action_discontinuity": {"ignored_dimensions": [14, 15]}}},
+        )
+    )
+
+    assert result.metadata["ignored_dimensions"] == []
+    assert result.metadata["configured_ignored_dimensions"] == [14, 15]
+    assert result.metadata["ignored_dimensions_out_of_range"] == [14, 15]
+    assert result.metadata["source_gripper_indices_removed"] == [6, 13]
+    assert result.metadata["metric_action_width"] == 3
+    assert result.metadata["raw_action_width"] == 14
+    assert result.events
+    assert result.events[0].value["ignored_dimensions"] == []
+    assert result.events[0].value["source_gripper_indices_removed"] == [6, 13]
+
+
 def test_velocity_spike_groups_contiguous_high_velocity_region() -> None:
     timestamps = [index * 0.05 for index in range(8)]
     records = [

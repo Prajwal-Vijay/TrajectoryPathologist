@@ -48,8 +48,8 @@ class GripperTransitionMetric:
 
         config = metric_config(context, self.name)
         threshold_value = float(metric_option(config, stream.metadata, "gripper_binary_threshold", 0.5))
-        low_state_label = str(metric_option(config, stream.metadata, "low_state_label", "open"))
-        high_state_label = str(metric_option(config, stream.metadata, "high_state_label", "closed"))
+        low_state_label = str(metric_option(config, stream.metadata, "low_state_label", "closed"))
+        high_state_label = str(metric_option(config, stream.metadata, "high_state_label", "open"))
         binary = [
             [1 if value >= threshold_value else 0 for value in sample]
             for sample in grippers

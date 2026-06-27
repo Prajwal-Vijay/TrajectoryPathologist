@@ -66,9 +66,14 @@
   "selector": {
     "point_event_delta_sec": 0.2,
     "frame_stride_within_window": 1,
-    "visual_context_sec": 4.0,
-    "max_frames_per_camera": 9,
+    "visual_context_sec": 0.5,
+    "max_frames_per_camera": 10,
     "min_segment_duration_sec": 0.2,
+    "same_metric_merge_gap_sec": 0.5,
+    "same_metric_merge_gap_excluded_metric_names": [
+      "gripper_transition"
+    ],
+    "proposal_merge_gap_sec": 1,
     "metric_packet_context_steps": 10,
     "ignored_metric_names": [
       "timestamp_regularity"

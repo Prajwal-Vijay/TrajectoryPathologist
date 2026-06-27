@@ -446,6 +446,16 @@ class StallingMetric:
                 description="Fraction of episode with little robot motion.",
                 metadata={"available": False, "unavailable_reason": "requires at least two vector samples"},
             )
+        gripper_stream = find_stream(
+            context.bundle,
+            [Modality.GRIPPER],
+            preferred_names=["gripper"],
+        )
+        _, grippers = extract_vector_series(
+            gripper_stream,
+            ["gripper", "grippers", "proprioception_grippers", "gripper_state"],
+        )
+        positions, gripper_dims_used = _append_gripper_state_if_aligned(positions, grippers)
 
         speeds = []
         speed_times = []
@@ -523,12 +533,32 @@ class StallingMetric:
             metadata={
                 "available": True,
                 "stream_name": stream.name,
+                "gripper_stream_name": gripper_stream.name if gripper_stream is not None else None,
+                "gripper_dims_used": gripper_dims_used,
+                "includes_gripper_state_change": gripper_dims_used > 0,
                 "stall_fraction": stall_fraction,
                 "stall_speed_threshold": stall_threshold,
                 "speed_percentile": speed_percentile,
                 "speed_median_fraction": speed_median_fraction,
             },
         )
+
+
+def _append_gripper_state_if_aligned(
+    positions: list[list[float]],
+    grippers: list[list[float]],
+) -> tuple[list[list[float]], int]:
+    """Include gripper state changes in stalling only when sample-aligned."""
+
+    if not positions or len(positions) != len(grippers):
+        return positions, 0
+    gripper_width = min((len(sample) for sample in grippers), default=0)
+    if gripper_width <= 0:
+        return positions, 0
+    return [
+        position + gripper[:gripper_width]
+        for position, gripper in zip(positions, grippers)
+    ], gripper_width
 
 
 def _stall_severity(

@@ -32,7 +32,7 @@ def test_single_gripper_transition_is_key_event() -> None:
 
     assert len(result.events) == 1
     assert result.events[0].time_window.start_sec == 0.1
-    assert result.events[0].value["transition_direction"] == "open_to_closed"
+    assert result.events[0].value["transition_direction"] == "closed_to_open"
     assert result.events[0].value["changed_dimensions"] == [0]
 
 
@@ -60,8 +60,8 @@ def test_gripper_transition_reports_multiple_changed_dimensions() -> None:
     assert len(result.events) == 1
     assert result.events[0].value["transition_direction"] == "mixed"
     assert result.events[0].value["transition_by_dimension"] == {
-        "0": "open_to_closed",
-        "1": "closed_to_open",
+        "0": "closed_to_open",
+        "1": "open_to_closed",
     }
 
 

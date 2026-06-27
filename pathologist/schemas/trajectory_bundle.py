@@ -14,6 +14,7 @@ class BundleFormat(StrEnum):
     """Known external storage formats."""
 
     ROBOEVAL_VLM_BUNDLE = "roboeval_vlm_bundle"
+    VIFAILBACK_HDF5_VIDEO = "vifailback_hdf5_video"
     RLDS = "rlds"
     DROID = "droid"
     ROBOTWIN = "robotwin"

@@ -64,6 +64,9 @@ class MetricEventSelector:
         max_frames_per_camera: int = 5,
         metric_packet_context_steps: int = 10,
         min_segment_duration_sec: float = 0.2,
+        same_metric_merge_gap_sec: float = 0.25,
+        same_metric_merge_gap_excluded_metric_names: set[str] | None = None,
+        proposal_merge_gap_sec: float = 0.25,
     ) -> None:
         if point_event_delta_sec < 0:
             raise ValueError("point_event_delta_sec must be non-negative.")
@@ -77,6 +80,10 @@ class MetricEventSelector:
             raise ValueError("metric_packet_context_steps must be non-negative.")
         if min_segment_duration_sec < 0:
             raise ValueError("min_segment_duration_sec must be non-negative.")
+        if same_metric_merge_gap_sec < 0:
+            raise ValueError("same_metric_merge_gap_sec must be non-negative.")
+        if proposal_merge_gap_sec < 0:
+            raise ValueError("proposal_merge_gap_sec must be non-negative.")
         self.point_event_delta_sec = point_event_delta_sec
         self.ignored_metric_names = ignored_metric_names or {"timestamp_regularity"}
         self.frame_stride_within_window = frame_stride_within_window
@@ -84,6 +91,11 @@ class MetricEventSelector:
         self.max_frames_per_camera = max_frames_per_camera
         self.metric_packet_context_steps = metric_packet_context_steps
         self.min_segment_duration_sec = min_segment_duration_sec
+        self.same_metric_merge_gap_sec = same_metric_merge_gap_sec
+        self.same_metric_merge_gap_excluded_metric_names = (
+            same_metric_merge_gap_excluded_metric_names or {"gripper_transition"}
+        )
+        self.proposal_merge_gap_sec = proposal_merge_gap_sec
 
     def select(
         self,
@@ -99,10 +111,18 @@ class MetricEventSelector:
             if metric.name not in self.ignored_metric_names
         }
         normalized_events = self._normalize_metric_events(metric_lookup) # Expands the point metrics into windows
-        metric_support_intervals = _merge_events_within_each_metric(normalized_events)
+        metric_support_intervals = _merge_events_within_each_metric(
+            normalized_events,
+            merge_gap_sec=self.same_metric_merge_gap_sec,
+            excluded_metric_names=self.same_metric_merge_gap_excluded_metric_names,
+        )
         timeline_segments = _build_timeline_segments(
             metric_support_intervals,
             min_segment_duration_sec=self.min_segment_duration_sec,
+        )
+        timeline_segments = _merge_timeline_segments_with_same_metrics(
+            timeline_segments,
+            merge_gap_sec=self.proposal_merge_gap_sec,
         )
         ranked_segments = sorted(
             timeline_segments,
@@ -237,6 +257,11 @@ class MetricEventSelector:
             "visual_context_sec": self.visual_context_sec,
             "max_frames_per_camera": self.max_frames_per_camera,
             "min_segment_duration_sec": self.min_segment_duration_sec,
+            "same_metric_merge_gap_sec": self.same_metric_merge_gap_sec,
+            "same_metric_merge_gap_excluded_metric_names": sorted(
+                self.same_metric_merge_gap_excluded_metric_names
+            ),
+            "proposal_merge_gap_sec": self.proposal_merge_gap_sec,
             "metric_packet_context_steps": self.metric_packet_context_steps,
             "ignored_metric_names": sorted(self.ignored_metric_names),
             "normalized_metric_events": [
@@ -288,8 +313,10 @@ def _expand_time_window(
 
 def _merge_events_within_each_metric(
     normalized_events: list[NormalizedMetricEvent],
+    merge_gap_sec: float,
+    excluded_metric_names: set[str],
 ) -> list[MetricSupportInterval]:
-    """Union overlapping event windows within each metric before cross-metric fusion."""
+    """Union nearby event windows within each metric before cross-metric fusion."""
 
     events_by_metric: dict[str, list[NormalizedMetricEvent]] = {}
     for event in normalized_events:
@@ -297,6 +324,7 @@ def _merge_events_within_each_metric(
 
     support_intervals: list[MetricSupportInterval] = []
     for metric_name, metric_events in events_by_metric.items():
+        metric_merge_gap_sec = 0.0 if metric_name in excluded_metric_names else merge_gap_sec
         sorted_events = sorted(
             metric_events,
             key=lambda event: (
@@ -318,7 +346,7 @@ def _merge_events_within_each_metric(
                 current_event_ids = [event.event_id]
                 continue
 
-            if start_sec <= current_end:
+            if start_sec <= current_end + metric_merge_gap_sec:
                 current_end = max(current_end, end_sec)
                 current_event_ids.append(event.event_id)
                 continue
@@ -348,6 +376,63 @@ def _merge_events_within_each_metric(
     return sorted(
         support_intervals,
         key=lambda interval: (interval.start_sec, interval.end_sec, interval.metric_name),
+    )
+
+
+def _merge_timeline_segments_with_same_metrics(
+    timeline_segments: list[TimelineSegment],
+    merge_gap_sec: float,
+) -> list[TimelineSegment]:
+    """Merge nearby proposal segments that have the same distinct metric set."""
+
+    if not timeline_segments:
+        return []
+
+    segments_by_metric_set: dict[tuple[str, ...], list[TimelineSegment]] = {}
+    for segment in timeline_segments:
+        metric_key = tuple(sorted(segment.metric_names))
+        segments_by_metric_set.setdefault(metric_key, []).append(segment)
+
+    merged_segments: list[TimelineSegment] = []
+    for metric_key, segments in segments_by_metric_set.items():
+        sorted_segments = sorted(
+            segments,
+            key=lambda segment: (segment.start_sec, segment.end_sec, segment.member_event_ids),
+        )
+        current_start = sorted_segments[0].start_sec
+        current_end = sorted_segments[0].end_sec
+        current_event_ids = set(sorted_segments[0].member_event_ids)
+
+        for segment in sorted_segments[1:]:
+            if segment.start_sec <= current_end + merge_gap_sec:
+                current_end = max(current_end, segment.end_sec)
+                current_event_ids.update(segment.member_event_ids)
+                continue
+
+            merged_segments.append(
+                TimelineSegment(
+                    start_sec=current_start,
+                    end_sec=current_end,
+                    metric_names=list(metric_key),
+                    member_event_ids=sorted(current_event_ids),
+                )
+            )
+            current_start = segment.start_sec
+            current_end = segment.end_sec
+            current_event_ids = set(segment.member_event_ids)
+
+        merged_segments.append(
+            TimelineSegment(
+                start_sec=current_start,
+                end_sec=current_end,
+                metric_names=list(metric_key),
+                member_event_ids=sorted(current_event_ids),
+            )
+        )
+
+    return sorted(
+        merged_segments,
+        key=lambda segment: (segment.start_sec, segment.end_sec, segment.metric_names),
     )
 
 
