@@ -13,11 +13,6 @@
       "high_fraction": 0.15
     },
     "action_discontinuity": {
-      "medium_percentile": 95,
-      "high_percentile": 99,
-      "robust_medium_mad_multiplier": 3.0,
-      "robust_high_mad_multiplier": 6.0,
-      "min_action_delta": 0.0,
       "ignored_dimensions": [14, 15]
     },
     "action_distribution_entropy": {
@@ -25,30 +20,9 @@
       "low_entropy_threshold": 0.15,
       "high_entropy_threshold": 0.95
     },
-    "motion_smoothness": {
-      "medium_percentile": 95,
-      "high_percentile": 99,
-      "robust_medium_mad_multiplier": 3.0,
-      "robust_high_mad_multiplier": 6.0,
-      "max_tolerable_jerk": 0.05,
-      "numerical_zero_jerk_norm": 1e-9,
-      "min_jerk_norm": 0.0
-    },
-    "velocity_spike": {
-      "medium_percentile": 95,
-      "high_percentile": 99,
-      "robust_medium_mad_multiplier": 3.0,
-      "robust_high_mad_multiplier": 6.0,
-      "min_velocity_norm": 0.0,
-      "min_region_duration_sec": 0.0
-    },
-    "stalling": {
-      "speed_percentile": 10,
-      "speed_median_fraction": 0.05,
-      "low_fraction": 0.10,
-      "medium_fraction": 0.20,
-      "high_fraction": 0.40
-    },
+    "motion_smoothness": {},
+    "velocity_spike": {},
+    "stalling": {},
     "gripper_transition": {
       "gripper_binary_threshold": 0.5,
       "low_state_label": "closed",
@@ -64,20 +38,45 @@
     }
   },
   "selector": {
-    "point_event_delta_sec": 0.2,
     "frame_stride_within_window": 1,
     "visual_context_sec": 0.5,
     "max_frames_per_camera": 10,
-    "min_segment_duration_sec": 0.2,
-    "same_metric_merge_gap_sec": 0.5,
-    "same_metric_merge_gap_excluded_metric_names": [
-      "gripper_transition"
-    ],
-    "proposal_merge_gap_sec": 1,
     "metric_packet_context_steps": 10,
-    "ignored_metric_names": [
-      "timestamp_regularity"
-    ]
+    "surprise_flood": {
+      "aggregate_metric_name": "ecod_aggregate_score",
+      "smoothing_window": 10,
+      "gamma": 0.3,
+      "max_proposals": 5
+    }
+  },
+  "robofac_qa": {
+    "kite_flow": {
+      "frame_stride": 2,
+      "nms_radius": 5,
+      "resize_width": 128,
+      "resize_height": 128
+    }
+  },
+  "surprise": {
+    "enabled": true,
+    "source_metrics": [
+      "action_discontinuity",
+      "motion_smoothness",
+      "velocity_spike",
+      "stalling"
+    ],
+    "aggregate_metric_name": "ecod_aggregate_score",
+    "score_tail_overrides": {
+      "stalling": "left"
+    },
+    "skewness_sign_overrides": {
+      "stalling": -1
+    },
+    "epsilon": 1e-12,
+    "plot": {
+      "enabled": true,
+      "output_dir_name": "ecod_score_plots"
+    }
   },
   "labeling": {
     "max_events_to_label": 30,

@@ -12,6 +12,7 @@ from pathologist.adapters.vifailback_bundle import ViFailBackBundleAdapter
 from pathologist.config import config_section, load_pipeline_config
 from pathologist.events import MetricEventSelector
 from pathologist.metrics import MetricEngine
+from pathologist.schemas.metrics import MetricProfile, MetricResult
 from pathologist.schemas import KeyEvent, TaskContract
 from pathologist.vlm import OpenAIEventLabelClient, VLMEventLabeler
 
@@ -28,12 +29,15 @@ def run_key_event_pipeline(
     video_sample_fps: float = 2.0,
     hdf5_fps: float = 25.0,
     default_control_hz: float = 50.0,
-    point_event_delta_sec: float | None = None,
     frame_stride_within_window: int | None = None,
     max_events_to_label: int | None = None,
     openai_model: str | None = None,
     event_label_client: Any | None = None,
     skip_labeling: bool = False,
+    plot_left_tail: bool = False,
+    plot_right_tail: bool = False,
+    plot_skew_tail: bool = False,
+    smooth_window: int = 1,
 ) -> dict[str, Any]:
     """Run the current key-event pipeline on one trajectory folder."""
 
@@ -51,11 +55,6 @@ def run_key_event_pipeline(
     selector_config = config_section(config, "selector")
     labeling_config = config_section(config, "labeling")
 
-    resolved_point_event_delta_sec = (
-        float(point_event_delta_sec)
-        if point_event_delta_sec is not None
-        else float(selector_config.get("point_event_delta_sec", 0.2))
-    )
     resolved_frame_stride_within_window = (
         int(frame_stride_within_window)
         if frame_stride_within_window is not None
@@ -64,18 +63,9 @@ def run_key_event_pipeline(
     metric_packet_context_steps = int(selector_config.get("metric_packet_context_steps", 10))
     visual_context_sec = float(selector_config.get("visual_context_sec", 1.0))
     max_frames_per_camera = int(selector_config.get("max_frames_per_camera", 5))
-    min_segment_duration_sec = float(selector_config.get("min_segment_duration_sec", 0.2))
-    same_metric_merge_gap_sec = float(selector_config.get("same_metric_merge_gap_sec", 0.25))
-    proposal_merge_gap_sec = float(selector_config.get("proposal_merge_gap_sec", 0.25))
-    ignored_metric_names = selector_config.get("ignored_metric_names", ["timestamp_regularity"])
-    if not isinstance(ignored_metric_names, list):
-        ignored_metric_names = ["timestamp_regularity"]
-    same_metric_merge_gap_excluded_metric_names = selector_config.get(
-        "same_metric_merge_gap_excluded_metric_names",
-        ["gripper_transition"],
-    )
-    if not isinstance(same_metric_merge_gap_excluded_metric_names, list):
-        same_metric_merge_gap_excluded_metric_names = ["gripper_transition"]
+    surprise_flood_config = selector_config.get("surprise_flood", {})
+    if not isinstance(surprise_flood_config, dict):
+        surprise_flood_config = {}
 
     resolved_max_events_to_label = (
         int(max_events_to_label)
@@ -96,23 +86,24 @@ def run_key_event_pipeline(
     )
 
     metric_profile = MetricEngine(config=config).compute(bundle)
+    ecod_plot_summary = _write_ecod_score_plots(
+        metric_profile,
+        config,
+        output_path,
+        plot_left_tail=plot_left_tail,
+        plot_right_tail=plot_right_tail,
+        plot_skew_tail=plot_skew_tail,
+        smooth_window=smooth_window,
+    )
     metric_profile_path = output_path / "metric_profile.json"
     metric_profile_path.write_text(json.dumps(metric_profile.to_dict(), indent=2), encoding="utf-8")
 
     selector = MetricEventSelector(
-        point_event_delta_sec=resolved_point_event_delta_sec,
-        ignored_metric_names={str(name) for name in ignored_metric_names},
         frame_stride_within_window=resolved_frame_stride_within_window,
         visual_context_sec=visual_context_sec,
         max_frames_per_camera=max_frames_per_camera,
         metric_packet_context_steps=metric_packet_context_steps,
-        min_segment_duration_sec=min_segment_duration_sec,
-        same_metric_merge_gap_sec=same_metric_merge_gap_sec,
-        same_metric_merge_gap_excluded_metric_names={
-            str(name)
-            for name in same_metric_merge_gap_excluded_metric_names
-        },
-        proposal_merge_gap_sec=proposal_merge_gap_sec,
+        surprise_flood_config=surprise_flood_config,
     )
     debug_timeline_path = output_path / "timeline_debug.json"
     proposals = selector.select(
@@ -196,10 +187,243 @@ def run_key_event_pipeline(
         "metric_grounding_cards_path": str(metric_grounding_cards_path),
         "task_contract_path": str(task_contract_path_out),
         "effective_config_path": str(effective_config_path),
+        "ecod_score_plots": ecod_plot_summary,
     }
     summary_path = output_path / "run_summary.json"
     summary_path.write_text(json.dumps(run_summary, indent=2), encoding="utf-8")
     return run_summary
+
+
+def _write_ecod_score_plots(
+    metric_profile: MetricProfile,
+    config: dict[str, Any],
+    output_path: Path,
+    plot_left_tail: bool = False,
+    plot_right_tail: bool = False,
+    plot_skew_tail: bool = False,
+    smooth_window: int = 1,
+) -> dict[str, Any]:
+    surprise_config = config_section(config, "surprise")
+    plot_config = surprise_config.get("plot", {})
+    if not isinstance(plot_config, dict):
+        plot_config = {}
+    resolved_smooth_window = max(1, int(smooth_window))
+    if not bool(surprise_config.get("enabled", True)) or not bool(plot_config.get("enabled", True)):
+        return {"enabled": False, "smooth_window": resolved_smooth_window, "plots": []}
+
+    output_dir = output_path / str(plot_config.get("output_dir_name", "ecod_score_plots"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+    status_path = output_dir / "plot_status.json"
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:
+        status = {
+            "enabled": True,
+            "available": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "smooth_window": resolved_smooth_window,
+            "plots": [],
+        }
+        status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
+        return status
+
+    metric_lookup = {metric.name: metric for metric in metric_profile.metrics}
+    plot_paths: list[str] = []
+    selected_components = _selected_ecod_plot_components(
+        plot_left_tail=plot_left_tail,
+        plot_right_tail=plot_right_tail,
+        plot_skew_tail=plot_skew_tail,
+    )
+    aggregate_metric_name = str(surprise_config.get("aggregate_metric_name", "ecod_aggregate_score"))
+    aggregate_metric = metric_lookup.get(aggregate_metric_name)
+    if aggregate_metric is not None and aggregate_metric.samples:
+        aggregate_plot_path = output_dir / "ecod_aggregate_score.png"
+        try:
+            _plot_ecod_aggregate_metric(aggregate_metric, aggregate_plot_path, plt, selected_components)
+            plot_paths.append(str(aggregate_plot_path))
+        except Exception as exc:
+            plot_paths.append(f"failed:{aggregate_metric.name}:{type(exc).__name__}:{exc}")
+        if resolved_smooth_window > 1:
+            smoothed_plot_path = output_dir / f"ecod_aggregate_score_smoothed_w{resolved_smooth_window}.png"
+            try:
+                _plot_ecod_aggregate_smoothed_metric(
+                    aggregate_metric,
+                    smoothed_plot_path,
+                    plt,
+                    window=resolved_smooth_window,
+                )
+                plot_paths.append(str(smoothed_plot_path))
+            except Exception as exc:
+                plot_paths.append(f"failed:{aggregate_metric.name}_smoothed:{type(exc).__name__}:{exc}")
+
+    for score_metric in metric_profile.metrics:
+        if not score_metric.name.endswith("_ecod_score"):
+            continue
+        source_metric_name = score_metric.metadata.get("source_metric_name")
+        if not isinstance(source_metric_name, str):
+            continue
+        source_metric = metric_lookup.get(source_metric_name)
+        if source_metric is None or not source_metric.samples or not score_metric.samples:
+            continue
+        plot_path = output_dir / f"{score_metric.name}.png"
+        try:
+            _plot_ecod_score_metric(source_metric, score_metric, plot_path, plt, selected_components)
+            plot_paths.append(str(plot_path))
+        except Exception as exc:
+            plot_paths.append(f"failed:{score_metric.name}:{type(exc).__name__}:{exc}")
+
+    status = {
+        "enabled": True,
+        "available": True,
+        "output_dir": str(output_dir),
+        "selected_components": sorted(selected_components),
+        "smooth_window": resolved_smooth_window,
+        "plots": plot_paths,
+    }
+    status_path.write_text(json.dumps(status, indent=2), encoding="utf-8")
+    return status
+
+
+def _plot_ecod_score_metric(
+    source_metric: MetricResult,
+    score_metric: MetricResult,
+    plot_path: Path,
+    plt: Any,
+    selected_components: set[str],
+) -> None:
+    source_times = [sample.timestamp_sec for sample in source_metric.samples if isinstance(sample.value, (int, float, bool))]
+    source_values = [float(sample.value) for sample in source_metric.samples if isinstance(sample.value, (int, float, bool))]
+    score_times = [sample.timestamp_sec for sample in score_metric.samples]
+    score_values = [float(sample.value) for sample in score_metric.samples]
+    if not source_times or not score_times:
+        return
+
+    figure, raw_axis = plt.subplots(figsize=(10, 4))
+    score_axis = raw_axis.twinx()
+    left_tail_scores = _float_metadata_list(score_metric, "left_tail_scores")
+    right_tail_scores = _float_metadata_list(score_metric, "right_tail_scores")
+    skew_tail_scores = _float_metadata_list(score_metric, "skew_tail_scores")
+    raw_axis.scatter(source_times, source_values, color="#1f77b4", s=8, alpha=0.65, label=source_metric.name)
+    if "actual" in selected_components:
+        score_axis.scatter(score_times, score_values, color="#111111", s=10, alpha=0.75, label=score_metric.name)
+    if "left" in selected_components and len(left_tail_scores) == len(score_times):
+        score_axis.scatter(score_times, left_tail_scores, color="#2ca02c", s=7, alpha=0.55, label="left_tail_score")
+    if "right" in selected_components and len(right_tail_scores) == len(score_times):
+        score_axis.scatter(score_times, right_tail_scores, color="#d62728", s=7, alpha=0.55, label="right_tail_score")
+    if "skew" in selected_components and len(skew_tail_scores) == len(score_times):
+        score_axis.scatter(score_times, skew_tail_scores, color="#9467bd", s=7, alpha=0.55, label="skew_tail_score")
+    raw_axis.set_xlabel("timestamp_sec")
+    raw_axis.set_ylabel(source_metric.unit or "raw value", color="#1f77b4")
+    score_axis.set_ylabel("ECOD surprise score", color="#d62728")
+    raw_axis.tick_params(axis="y", labelcolor="#1f77b4")
+    score_axis.tick_params(axis="y", labelcolor="#d62728")
+    raw_axis.grid(True, alpha=0.25)
+    score_axis.legend(loc="best")
+    figure.suptitle(f"{source_metric.name} raw value and ECOD surprise score")
+    figure.tight_layout()
+    figure.savefig(plot_path, dpi=160)
+    plt.close(figure)
+
+
+def _plot_ecod_aggregate_metric(
+    aggregate_metric: MetricResult,
+    plot_path: Path,
+    plt: Any,
+    selected_components: set[str],
+) -> None:
+    timestamps = [sample.timestamp_sec for sample in aggregate_metric.samples]
+    values = [float(sample.value) for sample in aggregate_metric.samples]
+    if not timestamps:
+        return
+    left_tail_scores = _float_metadata_list(aggregate_metric, "aggregate_left_tail_scores")
+    right_tail_scores = _float_metadata_list(aggregate_metric, "aggregate_right_tail_scores")
+    skew_tail_scores = _float_metadata_list(aggregate_metric, "aggregate_skew_tail_scores")
+
+    figure, axis = plt.subplots(figsize=(10, 4))
+    if "actual" in selected_components:
+        axis.scatter(timestamps, values, color="#111111", s=11, alpha=0.8, label=aggregate_metric.name)
+    if "left" in selected_components and len(left_tail_scores) == len(timestamps):
+        axis.scatter(timestamps, left_tail_scores, color="#2ca02c", s=8, alpha=0.55, label="aggregate_left_tail_score")
+    if "right" in selected_components and len(right_tail_scores) == len(timestamps):
+        axis.scatter(timestamps, right_tail_scores, color="#d62728", s=8, alpha=0.55, label="aggregate_right_tail_score")
+    if "skew" in selected_components and len(skew_tail_scores) == len(timestamps):
+        axis.scatter(timestamps, skew_tail_scores, color="#9467bd", s=8, alpha=0.45, label="aggregate_skew_tail_score")
+    axis.set_xlabel("timestamp_sec")
+    axis.set_ylabel("Aggregate ECOD surprise score")
+    axis.grid(True, alpha=0.25)
+    axis.legend(loc="best")
+    figure.suptitle("ECOD aggregate surprise score across metrics")
+    figure.tight_layout()
+    figure.savefig(plot_path, dpi=160)
+    plt.close(figure)
+
+
+def _plot_ecod_aggregate_smoothed_metric(
+    aggregate_metric: MetricResult,
+    plot_path: Path,
+    plt: Any,
+    window: int,
+) -> None:
+    timestamps = [sample.timestamp_sec for sample in aggregate_metric.samples]
+    values = [float(sample.value) for sample in aggregate_metric.samples]
+    if not timestamps:
+        return
+    smoothed_values = _centered_moving_average(values, window)
+
+    figure, axis = plt.subplots(figsize=(10, 4))
+    axis.scatter(timestamps, values, color="#999999", s=6, alpha=0.25, label="raw_aggregate_score")
+    axis.scatter(timestamps, smoothed_values, color="#111111", s=11, alpha=0.8, label=f"smoothed_w{window}")
+    axis.set_xlabel("timestamp_sec")
+    axis.set_ylabel("Aggregate ECOD surprise score")
+    axis.grid(True, alpha=0.25)
+    axis.legend(loc="best")
+    figure.suptitle(f"Smoothed ECOD aggregate surprise score (window={window} samples)")
+    figure.tight_layout()
+    figure.savefig(plot_path, dpi=160)
+    plt.close(figure)
+
+
+def _centered_moving_average(values: list[float], window: int) -> list[float]:
+    if window <= 1 or not values:
+        return list(values)
+    radius_left = (window - 1) // 2
+    radius_right = window // 2
+    smoothed = []
+    for index in range(len(values)):
+        start = max(0, index - radius_left)
+        end = min(len(values), index + radius_right + 1)
+        window_values = values[start:end]
+        smoothed.append(sum(window_values) / len(window_values))
+    return smoothed
+
+
+def _selected_ecod_plot_components(
+    plot_left_tail: bool,
+    plot_right_tail: bool,
+    plot_skew_tail: bool,
+) -> set[str]:
+    selected = set()
+    if plot_left_tail:
+        selected.add("left")
+    if plot_right_tail:
+        selected.add("right")
+    if plot_skew_tail:
+        selected.add("skew")
+    return selected or {"actual"}
+
+
+def _float_metadata_list(metric: MetricResult, key: str) -> list[float]:
+    values = metric.metadata.get(key)
+    if not isinstance(values, list):
+        return []
+    output = []
+    for value in values:
+        if isinstance(value, (int, float, bool)):
+            output.append(float(value))
+    return output
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -255,12 +479,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional pathologist config JSON. Bundle-local pathologist_config.json is loaded automatically.",
     )
     parser.add_argument(
-        "--point-event-delta-sec",
-        type=float,
-        default=None,
-        help="Half-window expansion for point metric events.",
-    )
-    parser.add_argument(
         "--frame-stride-within-window",
         type=int,
         default=None,
@@ -282,6 +500,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only compute metrics and key-event proposals, without VLM labels.",
     )
+    parser.add_argument(
+        "--left",
+        dest="plot_left_tail",
+        action="store_true",
+        help="Plot ECOD left-tail score components instead of the default actual score.",
+    )
+    parser.add_argument(
+        "--right",
+        dest="plot_right_tail",
+        action="store_true",
+        help="Plot ECOD right-tail score components instead of the default actual score.",
+    )
+    parser.add_argument(
+        "--skew",
+        dest="plot_skew_tail",
+        action="store_true",
+        help="Plot ECOD skew-selected score components instead of the default actual score.",
+    )
+    parser.add_argument(
+        "--smooth-window",
+        type=int,
+        default=1,
+        help="Centered moving-average window, in samples, for an extra smoothed aggregate ECOD plot. Use 1 to disable.",
+    )
     return parser
 
 
@@ -298,11 +540,14 @@ def main() -> None:
         video_sample_fps=args.video_sample_fps,
         hdf5_fps=args.hdf5_fps,
         default_control_hz=args.default_control_hz,
-        point_event_delta_sec=args.point_event_delta_sec,
         frame_stride_within_window=args.frame_stride_within_window,
         max_events_to_label=args.max_events_to_label,
         openai_model=args.openai_model,
         skip_labeling=args.skip_labeling,
+        plot_left_tail=args.plot_left_tail,
+        plot_right_tail=args.plot_right_tail,
+        plot_skew_tail=args.plot_skew_tail,
+        smooth_window=args.smooth_window,
     )
     print(json.dumps(summary, indent=2))
 

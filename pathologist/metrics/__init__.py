@@ -15,6 +15,7 @@ from pathologist.metrics.signals import (
     ActionDistributionEntropyMetric,
     ActionRangeSaturationMetric,
 )
+from pathologist.metrics.surprise import ECODSurpriseScorer, ecod_scores
 from pathologist.metrics.timing import TimestampRegularityMetric
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "ActionDistributionEntropyMetric",
     "ActionRangeSaturationMetric",
     "EndEffectorCartesianPathLengthMetric",
+    "ECODSurpriseScorer",
     "GripperChatterMetric",
     "GripperTransitionMetric",
     "JointPathLengthMetric",
@@ -33,4 +35,5 @@ __all__ = [
     "TimestampRegularityMetric",
     "VelocitySpikeMetric",
     "default_metric_computers",
+    "ecod_scores",
 ]

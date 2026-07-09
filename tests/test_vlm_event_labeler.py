@@ -63,7 +63,7 @@ class FakeEventLabelClient:
 
 def test_vlm_event_labeler_populates_key_event_label() -> None:
     proposal = KeyEventProposal(
-        event_id="demo_metric_overlap_001",
+        event_id="demo_surprise_flood_001",
         time_window=TimeWindow(1.0, 1.2),
         source=EventProposalSource.METRIC_TRIGGER,
         trigger_reason="2 metrics overlap",
@@ -73,7 +73,7 @@ def test_vlm_event_labeler_populates_key_event_label() -> None:
                 time_window=TimeWindow(1.0, 1.2),
                 value=25.0,
                 severity=Severity.HIGH,
-                reason="jerk norm exceeded p95",
+                reason="ECDF aggregate surprise peak",
             )
         ],
         candidate_frames=[
@@ -117,10 +117,10 @@ def test_vlm_event_labeler_populates_key_event_label() -> None:
 
 def test_event_label_payload_contains_task_and_proposal_context() -> None:
     proposal = KeyEventProposal(
-        event_id="demo_metric_overlap_001",
+        event_id="demo_surprise_flood_001",
         time_window=TimeWindow(1.0, 1.2),
         source=EventProposalSource.METRIC_TRIGGER,
-        trigger_reason="1 metric overlaps",
+        trigger_reason="aggregate surprise flood peak",
     )
     task_contract = TaskContract(
         task_name="Lift pot",
@@ -132,7 +132,7 @@ def test_event_label_payload_contains_task_and_proposal_context() -> None:
     payload = build_visual_label_payload(proposal, task_contract)
 
     assert payload["task_contract"]["task_name"] == "Lift pot"
-    assert payload["proposal"]["event_id"] == "demo_metric_overlap_001"
+    assert payload["proposal"]["event_id"] == "demo_surprise_flood_001"
     assert "output_schema" in payload
     assert "visual_observation" in payload["output_schema"]
     serialized_payload = str(payload)
@@ -143,17 +143,17 @@ def test_event_label_payload_contains_task_and_proposal_context() -> None:
 
 def test_no_task_contract_disables_outcome_reasoning_in_payloads() -> None:
     proposal = KeyEventProposal(
-        event_id="demo_metric_overlap_001",
+        event_id="demo_surprise_flood_001",
         time_window=TimeWindow(1.0, 1.2),
         source=EventProposalSource.METRIC_TRIGGER,
-        trigger_reason="1 metric overlaps",
+        trigger_reason="aggregate surprise flood peak",
         metric_events=[
             MetricEvent(
                 metric_name="motion_smoothness",
                 time_window=TimeWindow(1.1),
                 value=25.0,
                 severity=Severity.HIGH,
-                reason="jerk norm exceeded p95",
+                reason="ECDF aggregate surprise peak",
             )
         ],
     )
@@ -205,7 +205,7 @@ def test_metric_grounding_cards_preserve_numeric_grounding() -> None:
         time_window=TimeWindow(1.0),
         value=25.0,
         severity=Severity.HIGH,
-        reason="jerk norm 25.0 exceeded threshold 10.0",
+        reason="ECDF aggregate surprise peak value 25.0",
     )
 
     cards = build_metric_grounding_cards([event])
@@ -234,17 +234,17 @@ def test_gripper_transition_grounding_card_exposes_transition_direction() -> Non
 
 def test_integration_payload_uses_visual_label_and_metric_cards() -> None:
     proposal = KeyEventProposal(
-        event_id="demo_metric_overlap_001",
+        event_id="demo_surprise_flood_001",
         time_window=TimeWindow(1.0, 1.2),
         source=EventProposalSource.METRIC_TRIGGER,
-        trigger_reason="1 metric overlaps",
+        trigger_reason="aggregate surprise flood peak",
         metric_events=[
             MetricEvent(
                 metric_name="motion_smoothness",
                 time_window=TimeWindow(1.1),
                 value=25.0,
                 severity=Severity.HIGH,
-                reason="jerk norm exceeded p95",
+                reason="ECDF aggregate surprise peak",
             )
         ],
     )

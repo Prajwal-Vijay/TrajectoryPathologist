@@ -19,6 +19,7 @@ from pathologist.metrics.signals import (
     ActionDistributionEntropyMetric,
     ActionRangeSaturationMetric,
 )
+from pathologist.metrics.surprise import ECODSurpriseScorer
 from pathologist.metrics.timing import TimestampRegularityMetric
 from pathologist.schemas.metrics import MetricProfile
 from pathologist.schemas.trajectory_bundle import TrajectoryBundle
@@ -70,8 +71,9 @@ class MetricEngine:
         global_events = []
         for result in results:
             global_events.extend(result.events)
-        return MetricProfile(
+        profile = MetricProfile(
             bundle_id=bundle.bundle_id,
             metrics=results,
             global_events=global_events,
         )
+        return ECODSurpriseScorer(config=self.config).append_to_profile(profile)

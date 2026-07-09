@@ -1,4 +1,4 @@
-"""Tests for action and velocity event-trigger metrics."""
+"""Tests for scalar action and velocity source metrics."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathologist.metrics.signals import ActionDiscontinuityMetric
 from pathologist.schemas import BundleFormat, Modality, ModalityStream, TrajectoryBundle
 
 
-def test_action_discontinuity_flags_abrupt_command_jump_without_bounds() -> None:
+def test_action_discontinuity_records_command_delta_samples_without_bounds() -> None:
     timestamps = [index * 0.05 for index in range(6)]
     records = [
         {"action": [0.0, 0.0]},
@@ -34,10 +34,10 @@ def test_action_discontinuity_flags_abrupt_command_jump_without_bounds() -> None
     result = ActionDiscontinuityMetric().compute(MetricComputationContext(bundle=bundle))
 
     assert result.metadata["available"] is True
-    assert result.events
-    assert result.events[0].time_window.start_sec == 0.15000000000000002
-    assert result.events[0].value["max_changed_dimension"] == 0
-    assert result.events[0].value["action_delta_norm"] > 4.0
+    assert not result.events
+    assert not result.thresholds
+    assert [sample.timestamp_sec for sample in result.samples] == timestamps[1:]
+    assert max(sample.value for sample in result.samples) > 4.0
 
 
 def test_action_discontinuity_can_ignore_gripper_dimensions() -> None:
@@ -71,10 +71,9 @@ def test_action_discontinuity_can_ignore_gripper_dimensions() -> None:
     )
 
     assert result.metadata["ignored_dimensions"] == [2]
-    assert result.events
-    assert result.events[0].time_window.start_sec == 0.15000000000000002
-    assert result.events[0].value["max_changed_dimension"] == 0
-    assert all(event.value["max_changed_dimension"] != 2 for event in result.events)
+    assert not result.events
+    assert not result.thresholds
+    assert max(sample.value for sample in result.samples) > 4.0
 
 
 def test_action_discontinuity_reports_out_of_range_configured_ignored_dimensions() -> None:
@@ -118,12 +117,11 @@ def test_action_discontinuity_reports_out_of_range_configured_ignored_dimensions
     assert result.metadata["source_gripper_indices_removed"] == [6, 13]
     assert result.metadata["metric_action_width"] == 3
     assert result.metadata["raw_action_width"] == 14
-    assert result.events
-    assert result.events[0].value["ignored_dimensions"] == []
-    assert result.events[0].value["source_gripper_indices_removed"] == [6, 13]
+    assert not result.events
+    assert not result.thresholds
 
 
-def test_velocity_spike_groups_contiguous_high_velocity_region() -> None:
+def test_velocity_spike_records_velocity_norm_samples() -> None:
     timestamps = [index * 0.05 for index in range(8)]
     records = [
         {"qvel": [0.1, 0.0]},
@@ -148,19 +146,13 @@ def test_velocity_spike_groups_contiguous_high_velocity_region() -> None:
         ],
     )
 
-    result = VelocitySpikeMetric().compute(
-        MetricComputationContext(
-            bundle=bundle,
-            config={"metrics": {"velocity_spike": {"medium_percentile": 75, "high_percentile": 99}}},
-        )
-    )
+    result = VelocitySpikeMetric().compute(MetricComputationContext(bundle=bundle))
 
     assert result.metadata["available"] is True
-    assert result.events
-    assert result.events[0].time_window.start_sec == 0.1
-    assert result.events[0].time_window.end_sec == 0.2
-    assert result.events[0].value["sample_count"] == 3
-    assert result.events[0].value["peak_velocity_norm"] == 6.0
+    assert not result.events
+    assert not result.thresholds
+    assert [sample.timestamp_sec for sample in result.samples] == timestamps
+    assert max(sample.value for sample in result.samples) == 6.0
 
 
 def test_velocity_spike_unavailable_without_velocity_stream() -> None:

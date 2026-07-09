@@ -10,10 +10,7 @@ from pathologist.metrics.helpers import (
     extract_vector_series,
     find_stream,
     l2_norm,
-    median_absolute_deviation,
-    percentile,
     summarize,
-    top_indices,
     vector_diff,
 )
 from pathologist.schemas.common import (
@@ -304,80 +301,10 @@ class ActionDiscontinuityMetric:
                 max_dim_indices.append(None)
 
         sample_timestamps = align_timestamps(timestamps[1:], len(deltas))
-        medium_percentile = float(metric_option(config, stream.metadata, "medium_percentile", 95))
-        high_percentile = float(metric_option(config, stream.metadata, "high_percentile", 99))
-        robust_medium_mad_multiplier = float(metric_option(config, stream.metadata, "robust_medium_mad_multiplier", 3.0))
-        robust_high_mad_multiplier = float(metric_option(config, stream.metadata, "robust_high_mad_multiplier", 6.0))
-        min_action_delta = float(metric_option(config, stream.metadata, "min_action_delta", 0.0))
-
-        baseline_median = percentile(deltas, 50) or 0.0
-        baseline_mad = median_absolute_deviation(deltas)
-        p95 = percentile(deltas, medium_percentile) or 0.0
-        p99 = percentile(deltas, high_percentile) or p95
-        robust_medium_threshold = baseline_median + robust_medium_mad_multiplier * baseline_mad
-        robust_high_threshold = baseline_median + robust_high_mad_multiplier * baseline_mad
-        effective_p95 = max(p95, robust_medium_threshold, min_action_delta)
-        effective_p99 = max(p99, robust_high_threshold, effective_p95)
-
-        threshold = Threshold(
-            name="action_discontinuity_intra_episode",
-            basis=ThresholdBasis.INTRA_EPISODE_ROBUST_STAT,
-            condition=ThresholdCondition(
-                operator=ThresholdOperator.GREATER_THAN,
-                threshold_value=effective_p95,
-                reference_statistic="max(action_delta_p95, median_plus_3mad, min_action_delta)",
-            ),
-            severity_bands=[
-                SeverityBand(severity=Severity.MEDIUM, lower=effective_p95, upper=effective_p99),
-                SeverityBand(severity=Severity.HIGH, lower=effective_p99),
-            ],
-            numeric_context={
-                "baseline_median": baseline_median,
-                "baseline_mad": baseline_mad,
-                "median_plus_3mad": robust_medium_threshold,
-                "median_plus_6mad": robust_high_threshold,
-                "episode_p95": p95,
-                "episode_p99": p99,
-                "medium_percentile": medium_percentile,
-                "high_percentile": high_percentile,
-                "min_action_delta": min_action_delta,
-                "effective_medium_threshold": effective_p95,
-                "effective_high_threshold": effective_p99,
-            },
-        )
-        events = []
-        if effective_p95 > 0.0:
-            for index in top_indices(deltas, effective_p95, context.max_events_per_metric):
-                severity = Severity.HIGH if deltas[index] >= effective_p99 else Severity.MEDIUM
-                events.append(
-                    MetricEvent(
-                        metric_name=self.name,
-                        time_window=TimeWindow(sample_timestamps[index]),
-                        value={
-                            "action_delta_norm": deltas[index],
-                            "max_changed_dimension": max_dim_indices[index],
-                            "max_dimension_delta": max_dim_deltas[index],
-                            "previous_timestamp_sec": timestamps[index],
-                            "current_timestamp_sec": sample_timestamps[index],
-                            "ignored_dimensions": ignored_dimensions,
-                            "configured_ignored_dimensions": configured_ignored_dimensions,
-                            "ignored_dimensions_out_of_range": ignored_dimensions_out_of_range,
-                            "source_gripper_indices_removed": source_gripper_indices_removed,
-                            "metric_action_width": action_width,
-                            "raw_action_width": stream.metadata.get("raw_action_width"),
-                        },
-                        severity=severity,
-                        reason=(
-                            f"action delta norm {deltas[index]:.4f} exceeded effective "
-                            f"intra-episode action discontinuity threshold {effective_p95:.4f}"
-                        ),
-                        threshold=threshold,
-                    )
-                )
 
         return MetricResult(
             name=self.name,
-            description="Step-to-step L2 action command changes; spikes indicate abrupt control changes.",
+            description="Step-to-step L2 action command changes used as a scalar source for trajectory-relative ECDF surprise scoring.",
             source_modalities=[Modality.ACTION],
             unit="action_l2_delta",
             samples=[
@@ -385,8 +312,8 @@ class ActionDiscontinuityMetric:
                 for timestamp, value in zip(sample_timestamps, deltas)
             ],
             summary=summarize(deltas),
-            thresholds=[threshold],
-            events=events,
+            thresholds=[],
+            events=[],
             display_hint="action_delta_norm_timeseries",
             metadata={
                 "available": True,

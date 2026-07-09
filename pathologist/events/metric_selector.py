@@ -12,64 +12,37 @@ from pathologist.schemas.key_event import KeyEventProposal
 from pathologist.schemas.metrics import MetricEvent, MetricProfile, MetricResult
 from pathologist.schemas.trajectory_bundle import CameraFrameRef, TrajectoryBundle
 
-# NOTE:
-# I Have not yet implemented the semantic triggers and regular checkpoints, this is only metric calculated events.
-
 @dataclass(slots=True)
-class NormalizedMetricEvent:
-    """Metric event after point timestamps are expanded into windows."""
+class SurpriseFloodEvent:
+    """Peak basin extracted from the aggregate surprise landscape."""
 
-    event_id: str
-    metric_name: str
-    metric_event: MetricEvent
-    original_time_window: TimeWindow
-    normalized_time_window: TimeWindow
-
-
-@dataclass(slots=True)
-class TimelineSegment:
-    """Intersection interval with a stable set of active metric events."""
-
+    peak_index: int
+    peak_sec: float
     start_sec: float
     end_sec: float
-    metric_names: list[str]
-    member_event_ids: list[str]
-
-    @property
-    def overlap_count(self) -> int:
-        """Number of distinct metrics supporting the segment."""
-
-        return len(self.metric_names)
-
-
-@dataclass(slots=True)
-class MetricSupportInterval:
-    """Unioned active interval for one metric."""
-
-    metric_name: str
-    start_sec: float
-    end_sec: float
-    member_event_ids: list[str]
+    peak_score: float
+    base_score: float
+    persistence: float
+    contour_score: float
+    width_sec: float
+    area_above_base: float
+    rank_score: float
+    death_index: int | None = None
+    merge_sec: float | None = None
+    is_global_peak: bool = False
 
 
 class MetricEventSelector:
-    """Fuse metric-event windows into ranked key-event proposals."""
+    """Select key-event proposals from persistent peaks in ECDF surprise."""
 
     def __init__(
         self,
-        point_event_delta_sec: float,
-        ignored_metric_names: set[str] | None = None,
         frame_stride_within_window: int = 10,
         visual_context_sec: float = 1.0,
         max_frames_per_camera: int = 5,
         metric_packet_context_steps: int = 10,
-        min_segment_duration_sec: float = 0.2,
-        same_metric_merge_gap_sec: float = 0.25,
-        same_metric_merge_gap_excluded_metric_names: set[str] | None = None,
-        proposal_merge_gap_sec: float = 0.25,
+        surprise_flood_config: dict[str, Any] | None = None,
     ) -> None:
-        if point_event_delta_sec < 0:
-            raise ValueError("point_event_delta_sec must be non-negative.")
         if frame_stride_within_window <= 0:
             raise ValueError("frame_stride_within_window must be positive.")
         if visual_context_sec < 0:
@@ -78,24 +51,11 @@ class MetricEventSelector:
             raise ValueError("max_frames_per_camera must be positive.")
         if metric_packet_context_steps < 0:
             raise ValueError("metric_packet_context_steps must be non-negative.")
-        if min_segment_duration_sec < 0:
-            raise ValueError("min_segment_duration_sec must be non-negative.")
-        if same_metric_merge_gap_sec < 0:
-            raise ValueError("same_metric_merge_gap_sec must be non-negative.")
-        if proposal_merge_gap_sec < 0:
-            raise ValueError("proposal_merge_gap_sec must be non-negative.")
-        self.point_event_delta_sec = point_event_delta_sec
-        self.ignored_metric_names = ignored_metric_names or {"timestamp_regularity"}
         self.frame_stride_within_window = frame_stride_within_window
         self.visual_context_sec = visual_context_sec
         self.max_frames_per_camera = max_frames_per_camera
         self.metric_packet_context_steps = metric_packet_context_steps
-        self.min_segment_duration_sec = min_segment_duration_sec
-        self.same_metric_merge_gap_sec = same_metric_merge_gap_sec
-        self.same_metric_merge_gap_excluded_metric_names = (
-            same_metric_merge_gap_excluded_metric_names or {"gripper_transition"}
-        )
-        self.proposal_merge_gap_sec = proposal_merge_gap_sec
+        self.surprise_flood_config = surprise_flood_config or {}
 
     def select(
         self,
@@ -103,45 +63,84 @@ class MetricEventSelector:
         trajectory_bundle: TrajectoryBundle | None = None,
         debug_timeline_path: str | Path | None = None,
     ) -> list[KeyEventProposal]:
-        """Build ranked key-event proposals from metric overlaps."""
+        """Build ranked key-event proposals from the aggregate surprise landscape."""
 
-        metric_lookup = {
-            metric.name: metric
-            for metric in metric_profile.metrics
-            if metric.name not in self.ignored_metric_names
-        }
-        normalized_events = self._normalize_metric_events(metric_lookup) # Expands the point metrics into windows
-        metric_support_intervals = _merge_events_within_each_metric(
-            normalized_events,
-            merge_gap_sec=self.same_metric_merge_gap_sec,
-            excluded_metric_names=self.same_metric_merge_gap_excluded_metric_names,
+        proposals = self._select_surprise_flood_proposals(
+            metric_profile=metric_profile,
+            trajectory_bundle=trajectory_bundle,
         )
-        timeline_segments = _build_timeline_segments(
-            metric_support_intervals,
-            min_segment_duration_sec=self.min_segment_duration_sec,
-        )
-        timeline_segments = _merge_timeline_segments_with_same_metrics(
-            timeline_segments,
-            merge_gap_sec=self.proposal_merge_gap_sec,
-        )
-        ranked_segments = sorted(
-            timeline_segments,
-            key=lambda segment: (-segment.overlap_count, segment.start_sec),
-        )
+        if debug_timeline_path is not None:
+            self._write_surprise_flood_debug_timeline(
+                metric_profile=metric_profile,
+                proposals=proposals,
+                debug_timeline_path=Path(debug_timeline_path),
+            )
+        return proposals
 
-        event_lookup = {event.event_id: event for event in normalized_events}
-        proposals = []
-        for rank, segment in enumerate(ranked_segments, start=1):
-            member_events = [event_lookup[event_id].metric_event for event_id in segment.member_event_ids]
-            proposal_time_window = TimeWindow(segment.start_sec, segment.end_sec)
+    def _select_surprise_flood_proposals(
+        self,
+        metric_profile: MetricProfile,
+        trajectory_bundle: TrajectoryBundle | None,
+    ) -> list[KeyEventProposal]:
+        """Build proposals from persistent peaks in the aggregate ECOD surprise curve."""
+
+        aggregate_metric_name = str(
+            self.surprise_flood_config.get("aggregate_metric_name", "ecod_aggregate_score")
+        )
+        metric_lookup = {metric.name: metric for metric in metric_profile.metrics}
+        aggregate_metric = metric_lookup.get(aggregate_metric_name)
+        if aggregate_metric is None or not aggregate_metric.samples:
+            return []
+
+        timestamps: list[float] = []
+        raw_scores: list[float] = []
+        for sample in aggregate_metric.samples:
+            if not isinstance(sample.value, (int, float, bool)):
+                continue
+            timestamps.append(float(sample.timestamp_sec))
+            raw_scores.append(float(sample.value))
+        if len(timestamps) < 3:
+            return []
+
+        smooth_window = int(self.surprise_flood_config.get("smoothing_window", 1))
+        gamma = float(self.surprise_flood_config.get("gamma", 0.5))
+        max_proposals = int(self.surprise_flood_config.get("max_proposals", 0))
+        gamma = min(1.0, max(0.0, gamma))
+        smoothed_scores = _centered_moving_average(raw_scores, max(1, smooth_window))
+        flood_events = _extract_surprise_flood_events(
+            timestamps=timestamps,
+            scores=smoothed_scores,
+            gamma=gamma,
+        )
+        if max_proposals > 0:
+            flood_events = flood_events[:max_proposals]
+
+        proposals: list[KeyEventProposal] = []
+        for rank, flood_event in enumerate(flood_events, start=1):
+            proposal_time_window = TimeWindow(flood_event.start_sec, flood_event.end_sec)
+            metric_event = MetricEvent(
+                metric_name=aggregate_metric_name,
+                time_window=proposal_time_window,
+                value={
+                    "peak_score": flood_event.peak_score,
+                    "base_score": flood_event.base_score,
+                    "persistence": flood_event.persistence,
+                    "area_above_base": flood_event.area_above_base,
+                    "width_sec": flood_event.width_sec,
+                    "peak_sec": flood_event.peak_sec,
+                },
+                severity="surprise",
+                reason=(
+                    "Persistent peak in aggregate ECOD surprise landscape "
+                    f"at {flood_event.peak_sec:.3f}s"
+                ),
+            )
             metric_packet = [
                 _local_metric_context(
-                    metric_lookup[name],
+                    aggregate_metric,
                     proposal_time_window,
                     context_steps=self.metric_packet_context_steps,
                 )
-                for name in segment.metric_names
-                if name in metric_lookup
             ]
             candidate_frames = self._select_candidate_frames(
                 trajectory_bundle=trajectory_bundle,
@@ -149,36 +148,41 @@ class MetricEventSelector:
             )
             proposals.append(
                 KeyEventProposal(
-                    event_id=f"{metric_profile.bundle_id}_metric_overlap_{rank:03d}",
+                    event_id=f"{metric_profile.bundle_id}_surprise_flood_{rank:03d}",
                     time_window=proposal_time_window,
                     source=EventProposalSource.METRIC_TRIGGER,
                     trigger_reason=(
-                        f"{segment.overlap_count} metric(s) overlap on "
-                        f"[{segment.start_sec:.3f}, {segment.end_sec:.3f}]"
+                        f"aggregate surprise flood peak at {flood_event.peak_sec:.3f}s "
+                        f"with area {flood_event.area_above_base:.3f} and "
+                        f"persistence {flood_event.persistence:.3f}"
                     ),
                     candidate_frames=candidate_frames,
-                    metric_events=member_events,
+                    metric_events=[metric_event],
                     metric_packet=metric_packet,
                     metadata={
                         "timeline_rank": rank,
-                        "overlap_metric_count": segment.overlap_count,
-                        "metric_names": segment.metric_names,
-                        "member_event_ids": segment.member_event_ids,
+                        "selector_mode": "surprise_flood",
+                        "proposal_score": flood_event.rank_score,
+                        "rank_score_type": "area_above_base",
+                        "aggregate_metric_name": aggregate_metric_name,
+                        "peak_index": flood_event.peak_index,
+                        "peak_sec": flood_event.peak_sec,
+                        "peak_score": flood_event.peak_score,
+                        "base_score": flood_event.base_score,
+                        "persistence": flood_event.persistence,
+                        "contour_score": flood_event.contour_score,
+                        "width_sec": flood_event.width_sec,
+                        "area_above_base": flood_event.area_above_base,
+                        "death_index": flood_event.death_index,
+                        "merge_sec": flood_event.merge_sec,
+                        "is_global_peak": flood_event.is_global_peak,
+                        "smoothing_window": max(1, smooth_window),
+                        "gamma": gamma,
                         "candidate_frame_count": len(candidate_frames),
                         "visual_context_sec": self.visual_context_sec,
                     },
                 )
             )
-
-        if debug_timeline_path is not None:
-            self._write_debug_timeline(
-                metric_profile=metric_profile,
-                normalized_events=normalized_events,
-                metric_support_intervals=metric_support_intervals,
-                timeline_segments=ranked_segments,
-                debug_timeline_path=Path(debug_timeline_path),
-            )
-
         return proposals
 
     def _select_candidate_frames(
@@ -216,290 +220,43 @@ class MetricEventSelector:
         sampled_frames.sort(key=_camera_frame_sort_key)
         return sampled_frames
 
-    def _normalize_metric_events(
-        self,
-        metric_lookup: dict[str, MetricResult],
-    ) -> list[NormalizedMetricEvent]:
-        """Expand point metric events into windows."""
-
-        normalized_events: list[NormalizedMetricEvent] = []
-        for metric in metric_lookup.values():
-            for index, event in enumerate(metric.events):
-                normalized_window = _expand_time_window(
-                    event.time_window,
-                    point_event_delta_sec=self.point_event_delta_sec,
-                )
-                normalized_events.append(
-                    NormalizedMetricEvent(
-                        event_id=f"{metric.name}_event_{index:03d}",
-                        metric_name=metric.name,
-                        metric_event=event,
-                        original_time_window=event.time_window,
-                        normalized_time_window=normalized_window,
-                    )
-                )
-        return normalized_events
-
-    def _write_debug_timeline(
+    def _write_surprise_flood_debug_timeline(
         self,
         metric_profile: MetricProfile,
-        normalized_events: list[NormalizedMetricEvent],
-        metric_support_intervals: list[MetricSupportInterval],
-        timeline_segments: list[TimelineSegment],
+        proposals: list[KeyEventProposal],
         debug_timeline_path: Path,
     ) -> None:
-        """Write the normalized metric timeline and fused intersections to JSON."""
+        """Write the surprise-flood proposal timeline to JSON."""
 
         debug_timeline_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "bundle_id": metric_profile.bundle_id,
-            "point_event_delta_sec": self.point_event_delta_sec,
+            "selector_mode": "surprise_flood",
+            "surprise_flood_config": self.surprise_flood_config,
             "visual_context_sec": self.visual_context_sec,
             "max_frames_per_camera": self.max_frames_per_camera,
-            "min_segment_duration_sec": self.min_segment_duration_sec,
-            "same_metric_merge_gap_sec": self.same_metric_merge_gap_sec,
-            "same_metric_merge_gap_excluded_metric_names": sorted(
-                self.same_metric_merge_gap_excluded_metric_names
-            ),
-            "proposal_merge_gap_sec": self.proposal_merge_gap_sec,
             "metric_packet_context_steps": self.metric_packet_context_steps,
-            "ignored_metric_names": sorted(self.ignored_metric_names),
-            "normalized_metric_events": [
-                {
-                    "event_id": event.event_id,
-                    "metric_name": event.metric_name,
-                    "original_time_window": _time_window_to_dict(event.original_time_window),
-                    "normalized_time_window": _time_window_to_dict(event.normalized_time_window),
-                    "reason": event.metric_event.reason,
-                }
-                for event in normalized_events
-            ],
-            "metric_support_intervals": [
-                {
-                    "metric_name": interval.metric_name,
-                    "start_sec": interval.start_sec,
-                    "end_sec": interval.end_sec,
-                    "member_event_ids": interval.member_event_ids,
-                }
-                for interval in metric_support_intervals
-            ],
-            "fused_timeline_segments": [
+            "surprise_flood_events": [
                 {
                     "rank": rank,
-                    "start_sec": segment.start_sec,
-                    "end_sec": segment.end_sec,
-                    "metric_names": segment.metric_names,
-                    "overlap_count": segment.overlap_count,
-                    "member_event_ids": segment.member_event_ids,
+                    "event_id": proposal.event_id,
+                    "time_window": _time_window_to_dict(proposal.time_window),
+                    "proposal_score": proposal.metadata.get("proposal_score"),
+                    "peak_sec": proposal.metadata.get("peak_sec"),
+                    "peak_score": proposal.metadata.get("peak_score"),
+                    "base_score": proposal.metadata.get("base_score"),
+                    "persistence": proposal.metadata.get("persistence"),
+                    "contour_score": proposal.metadata.get("contour_score"),
+                    "width_sec": proposal.metadata.get("width_sec"),
+                    "area_above_base": proposal.metadata.get("area_above_base"),
+                    "merge_sec": proposal.metadata.get("merge_sec"),
+                    "is_global_peak": proposal.metadata.get("is_global_peak"),
+                    "candidate_frame_count": len(proposal.candidate_frames),
                 }
-                for rank, segment in enumerate(timeline_segments, start=1)
+                for rank, proposal in enumerate(proposals, start=1)
             ],
         }
         debug_timeline_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-
-
-def _expand_time_window(
-    time_window: TimeWindow,
-    point_event_delta_sec: float,
-) -> TimeWindow:
-    """Expand point timestamps into windows while leaving interval events unchanged."""
-
-    if time_window.end_sec is not None and time_window.end_sec > time_window.start_sec:
-        return TimeWindow(time_window.start_sec, time_window.end_sec)
-    start_sec = max(0.0, time_window.start_sec - point_event_delta_sec)
-    end_sec = time_window.start_sec + point_event_delta_sec
-    return TimeWindow(start_sec, end_sec)
-
-
-def _merge_events_within_each_metric(
-    normalized_events: list[NormalizedMetricEvent],
-    merge_gap_sec: float,
-    excluded_metric_names: set[str],
-) -> list[MetricSupportInterval]:
-    """Union nearby event windows within each metric before cross-metric fusion."""
-
-    events_by_metric: dict[str, list[NormalizedMetricEvent]] = {}
-    for event in normalized_events:
-        events_by_metric.setdefault(event.metric_name, []).append(event)
-
-    support_intervals: list[MetricSupportInterval] = []
-    for metric_name, metric_events in events_by_metric.items():
-        metric_merge_gap_sec = 0.0 if metric_name in excluded_metric_names else merge_gap_sec
-        sorted_events = sorted(
-            metric_events,
-            key=lambda event: (
-                event.normalized_time_window.start_sec,
-                event.normalized_time_window.end_sec or event.normalized_time_window.start_sec,
-                event.event_id,
-            ),
-        )
-        current_start: float | None = None
-        current_end: float | None = None
-        current_event_ids: list[str] = []
-
-        for event in sorted_events:
-            start_sec = event.normalized_time_window.start_sec
-            end_sec = event.normalized_time_window.end_sec or event.normalized_time_window.start_sec
-            if current_start is None or current_end is None:
-                current_start = start_sec
-                current_end = end_sec
-                current_event_ids = [event.event_id]
-                continue
-
-            if start_sec <= current_end + metric_merge_gap_sec:
-                current_end = max(current_end, end_sec)
-                current_event_ids.append(event.event_id)
-                continue
-
-            support_intervals.append(
-                MetricSupportInterval(
-                    metric_name=metric_name,
-                    start_sec=current_start,
-                    end_sec=current_end,
-                    member_event_ids=sorted(current_event_ids),
-                )
-            )
-            current_start = start_sec
-            current_end = end_sec
-            current_event_ids = [event.event_id]
-
-        if current_start is not None and current_end is not None:
-            support_intervals.append(
-                MetricSupportInterval(
-                    metric_name=metric_name,
-                    start_sec=current_start,
-                    end_sec=current_end,
-                    member_event_ids=sorted(current_event_ids),
-                )
-            )
-
-    return sorted(
-        support_intervals,
-        key=lambda interval: (interval.start_sec, interval.end_sec, interval.metric_name),
-    )
-
-
-def _merge_timeline_segments_with_same_metrics(
-    timeline_segments: list[TimelineSegment],
-    merge_gap_sec: float,
-) -> list[TimelineSegment]:
-    """Merge nearby proposal segments that have the same distinct metric set."""
-
-    if not timeline_segments:
-        return []
-
-    segments_by_metric_set: dict[tuple[str, ...], list[TimelineSegment]] = {}
-    for segment in timeline_segments:
-        metric_key = tuple(sorted(segment.metric_names))
-        segments_by_metric_set.setdefault(metric_key, []).append(segment)
-
-    merged_segments: list[TimelineSegment] = []
-    for metric_key, segments in segments_by_metric_set.items():
-        sorted_segments = sorted(
-            segments,
-            key=lambda segment: (segment.start_sec, segment.end_sec, segment.member_event_ids),
-        )
-        current_start = sorted_segments[0].start_sec
-        current_end = sorted_segments[0].end_sec
-        current_event_ids = set(sorted_segments[0].member_event_ids)
-
-        for segment in sorted_segments[1:]:
-            if segment.start_sec <= current_end + merge_gap_sec:
-                current_end = max(current_end, segment.end_sec)
-                current_event_ids.update(segment.member_event_ids)
-                continue
-
-            merged_segments.append(
-                TimelineSegment(
-                    start_sec=current_start,
-                    end_sec=current_end,
-                    metric_names=list(metric_key),
-                    member_event_ids=sorted(current_event_ids),
-                )
-            )
-            current_start = segment.start_sec
-            current_end = segment.end_sec
-            current_event_ids = set(segment.member_event_ids)
-
-        merged_segments.append(
-            TimelineSegment(
-                start_sec=current_start,
-                end_sec=current_end,
-                metric_names=list(metric_key),
-                member_event_ids=sorted(current_event_ids),
-            )
-        )
-
-    return sorted(
-        merged_segments,
-        key=lambda segment: (segment.start_sec, segment.end_sec, segment.metric_names),
-    )
-
-
-def _build_timeline_segments(
-    metric_support_intervals: list[MetricSupportInterval],
-    min_segment_duration_sec: float,
-) -> list[TimelineSegment]:
-    """Build exact intersection intervals from metric-level support intervals."""
-
-    if not metric_support_intervals:
-        return []
-
-    boundaries = sorted(
-        {
-            interval.start_sec
-            for interval in metric_support_intervals
-        }
-    |   {
-            interval.end_sec
-            for interval in metric_support_intervals
-        }
-    )
-
-    segments: list[TimelineSegment] = []
-    for start_sec, end_sec in zip(boundaries, boundaries[1:]):
-        if end_sec <= start_sec:
-            continue
-
-        if (end_sec - start_sec) < min_segment_duration_sec:
-            continue
-        active_intervals = [
-            interval
-            for interval in metric_support_intervals
-            if interval.start_sec <= start_sec
-            and interval.end_sec >= end_sec
-        ]
-        if not active_intervals:
-            continue
-        metric_names = sorted(interval.metric_name for interval in active_intervals)
-        member_event_ids = sorted(
-            {
-                event_id
-                for interval in active_intervals
-                for event_id in interval.member_event_ids
-            }
-        )
-        segment = TimelineSegment(
-            start_sec=start_sec,
-            end_sec=end_sec,
-            metric_names=metric_names,
-            member_event_ids=member_event_ids,
-        )
-        if (
-            segments
-            # If the previous event was just a part of this event then merge!
-            and segments[-1].metric_names == segment.metric_names 
-            and segments[-1].member_event_ids == segment.member_event_ids
-        ):
-            segments[-1] = TimelineSegment(
-                start_sec=segments[-1].start_sec,
-                end_sec=segment.end_sec,
-                metric_names=segment.metric_names,
-                member_event_ids=segment.member_event_ids,
-            )
-        else:
-            segments.append(segment)
-    return segments
 
 
 def _local_metric_context(
@@ -681,3 +438,314 @@ def _time_window_to_dict(time_window: TimeWindow) -> dict[str, float | None]:
         "start_sec": time_window.start_sec,
         "end_sec": time_window.end_sec,
     }
+
+
+def _extract_surprise_flood_events(
+    timestamps: list[float],
+    scores: list[float],
+    gamma: float,
+) -> list[SurpriseFloodEvent]:
+    """Extract persistent peak basins from a 1-D surprise landscape."""
+
+    if len(timestamps) != len(scores):
+        raise ValueError("timestamps and scores must have the same length.")
+    if len(scores) < 3:
+        return []
+
+    peak_indices = _local_maxima_indices(scores)
+    if not peak_indices:
+        return []
+
+    peak_set = set(peak_indices)
+    parent = list(range(len(scores)))
+    component_peak: dict[int, int] = {}
+    active = [False] * len(scores)
+    dead_events: dict[int, dict[str, Any]] = {}
+
+    for index in sorted(range(len(scores)), key=lambda item: (-scores[item], timestamps[item])):
+        active[index] = True
+        parent[index] = index
+        if index in peak_set:
+            component_peak[index] = index
+
+        for neighbor in (index - 1, index + 1):
+            if neighbor < 0 or neighbor >= len(scores) or not active[neighbor]:
+                continue
+            root_index = _find_union_parent(parent, index)
+            root_neighbor = _find_union_parent(parent, neighbor)
+            if root_index == root_neighbor:
+                continue
+            survivor_root, loser_peak = _merge_surprise_components(
+                parent=parent,
+                component_peak=component_peak,
+                root_a=root_index,
+                root_b=root_neighbor,
+                scores=scores,
+                timestamps=timestamps,
+            )
+            if loser_peak is not None and loser_peak not in dead_events:
+                dead_events[loser_peak] = {
+                    "death_index": index,
+                    "death_level": scores[index],
+                    "merge_sec": timestamps[index],
+                }
+            parent[_find_union_parent(parent, index)] = survivor_root
+
+    global_peak_index = max(peak_indices, key=lambda item: (scores[item], -timestamps[item]))
+    global_base = min(scores)
+    events: list[SurpriseFloodEvent] = []
+    for peak_index in peak_indices:
+        death = dead_events.get(peak_index)
+        is_global_peak = peak_index == global_peak_index and death is None
+        base_score = float(death["death_level"]) if death is not None else float(global_base)
+        peak_score = float(scores[peak_index])
+        persistence = max(0.0, peak_score - base_score)
+        if persistence <= 0:
+            continue
+        contour_score = base_score + gamma * persistence
+        start_sec, end_sec = _contour_window(
+            timestamps=timestamps,
+            scores=scores,
+            peak_index=peak_index,
+            contour_score=contour_score,
+        )
+        area = _area_above_base(
+            timestamps=timestamps,
+            scores=scores,
+            start_sec=start_sec,
+            end_sec=end_sec,
+            base_score=base_score,
+        )
+        width_sec = max(0.0, end_sec - start_sec)
+        events.append(
+            SurpriseFloodEvent(
+                peak_index=peak_index,
+                peak_sec=timestamps[peak_index],
+                start_sec=start_sec,
+                end_sec=end_sec,
+                peak_score=peak_score,
+                base_score=base_score,
+                persistence=persistence,
+                contour_score=contour_score,
+                width_sec=width_sec,
+                area_above_base=area,
+                rank_score=area,
+                death_index=int(death["death_index"]) if death is not None else None,
+                merge_sec=float(death["merge_sec"]) if death is not None else None,
+                is_global_peak=is_global_peak,
+            )
+        )
+
+    return sorted(
+        events,
+        key=lambda event: (
+            -event.rank_score,
+            -event.persistence,
+            -event.peak_score,
+            event.peak_sec,
+        ),
+    )
+
+
+def _local_maxima_indices(scores: list[float]) -> list[int]:
+    """Return representative indices for local maxima, including flat plateaus."""
+
+    peaks: list[int] = []
+    index = 0
+    last = len(scores) - 1
+    while index <= last:
+        plateau_start = index
+        while index < last and scores[index + 1] == scores[plateau_start]:
+            index += 1
+        plateau_end = index
+        left_value = scores[plateau_start - 1] if plateau_start > 0 else None
+        right_value = scores[plateau_end + 1] if plateau_end < last else None
+        current_value = scores[plateau_start]
+        left_ok = left_value is None or current_value > left_value
+        right_ok = right_value is None or current_value > right_value
+        if left_ok and right_ok:
+            peaks.append((plateau_start + plateau_end) // 2)
+        index += 1
+    if len(peaks) == 1 and (peaks[0] == 0 or peaks[0] == last):
+        return peaks
+    return [peak for peak in peaks if 0 < peak < last]
+
+
+def _find_union_parent(parent: list[int], index: int) -> int:
+    """Find the active component representative with path compression."""
+
+    while parent[index] != index:
+        parent[index] = parent[parent[index]]
+        index = parent[index]
+    return index
+
+
+def _merge_surprise_components(
+    parent: list[int],
+    component_peak: dict[int, int],
+    root_a: int,
+    root_b: int,
+    scores: list[float],
+    timestamps: list[float],
+) -> tuple[int, int | None]:
+    """Merge two active components and return the surviving root and dying peak."""
+
+    peak_a = component_peak.get(root_a)
+    peak_b = component_peak.get(root_b)
+    if peak_a is None and peak_b is None:
+        parent[root_b] = root_a
+        return root_a, None
+    if peak_a is None:
+        parent[root_a] = root_b
+        return root_b, None
+    if peak_b is None:
+        parent[root_b] = root_a
+        return root_a, None
+
+    key_a = (scores[peak_a], -timestamps[peak_a])
+    key_b = (scores[peak_b], -timestamps[peak_b])
+    if key_a >= key_b:
+        survivor_root, loser_root = root_a, root_b
+        survivor_peak, loser_peak = peak_a, peak_b
+    else:
+        survivor_root, loser_root = root_b, root_a
+        survivor_peak, loser_peak = peak_b, peak_a
+    parent[loser_root] = survivor_root
+    component_peak[survivor_root] = survivor_peak
+    component_peak.pop(loser_root, None)
+    return survivor_root, loser_peak
+
+
+def _contour_window(
+    timestamps: list[float],
+    scores: list[float],
+    peak_index: int,
+    contour_score: float,
+) -> tuple[float, float]:
+    """Find left/right contour crossings around a peak."""
+
+    start_sec = timestamps[0]
+    for index in range(peak_index, 0, -1):
+        left_score = scores[index - 1]
+        right_score = scores[index]
+        if left_score <= contour_score <= right_score:
+            start_sec = _interpolate_crossing(
+                timestamps[index - 1],
+                timestamps[index],
+                left_score,
+                right_score,
+                contour_score,
+            )
+            break
+
+    end_sec = timestamps[-1]
+    for index in range(peak_index, len(scores) - 1):
+        left_score = scores[index]
+        right_score = scores[index + 1]
+        if left_score >= contour_score >= right_score:
+            end_sec = _interpolate_crossing(
+                timestamps[index],
+                timestamps[index + 1],
+                left_score,
+                right_score,
+                contour_score,
+            )
+            break
+    return start_sec, end_sec
+
+
+def _interpolate_crossing(
+    left_time: float,
+    right_time: float,
+    left_score: float,
+    right_score: float,
+    target_score: float,
+) -> float:
+    """Linearly interpolate the timestamp where a segment crosses a score level."""
+
+    score_delta = right_score - left_score
+    if score_delta == 0:
+        return (left_time + right_time) / 2.0
+    fraction = (target_score - left_score) / score_delta
+    fraction = min(1.0, max(0.0, fraction))
+    return left_time + fraction * (right_time - left_time)
+
+
+def _area_above_base(
+    timestamps: list[float],
+    scores: list[float],
+    start_sec: float,
+    end_sec: float,
+    base_score: float,
+) -> float:
+    """Integrate positive surprise above local base within an event window."""
+
+    if end_sec <= start_sec:
+        return 0.0
+    points = [(start_sec, _score_at_time(timestamps, scores, start_sec))]
+    points.extend(
+        (timestamp, score)
+        for timestamp, score in zip(timestamps, scores)
+        if start_sec < timestamp < end_sec
+    )
+    points.append((end_sec, _score_at_time(timestamps, scores, end_sec)))
+    area = 0.0
+    for (left_time, left_score), (right_time, right_score) in zip(points, points[1:]):
+        left_height = max(0.0, left_score - base_score)
+        right_height = max(0.0, right_score - base_score)
+        area += (right_time - left_time) * (left_height + right_height) / 2.0
+    return area
+
+
+def _score_at_time(timestamps: list[float], scores: list[float], timestamp_sec: float) -> float:
+    """Linearly interpolate the score at a timestamp."""
+
+    if timestamp_sec <= timestamps[0]:
+        return scores[0]
+    if timestamp_sec >= timestamps[-1]:
+        return scores[-1]
+    for index in range(len(timestamps) - 1):
+        left_time = timestamps[index]
+        right_time = timestamps[index + 1]
+        if left_time <= timestamp_sec <= right_time:
+            return _interpolate_value(
+                left_time,
+                right_time,
+                scores[index],
+                scores[index + 1],
+                timestamp_sec,
+            )
+    return scores[-1]
+
+
+def _interpolate_value(
+    left_time: float,
+    right_time: float,
+    left_score: float,
+    right_score: float,
+    target_time: float,
+) -> float:
+    """Linearly interpolate a score at a target timestamp."""
+
+    time_delta = right_time - left_time
+    if time_delta == 0:
+        return (left_score + right_score) / 2.0
+    fraction = (target_time - left_time) / time_delta
+    fraction = min(1.0, max(0.0, fraction))
+    return left_score + fraction * (right_score - left_score)
+
+
+def _centered_moving_average(values: list[float], window: int) -> list[float]:
+    """Smooth values using a centered moving average."""
+
+    if window <= 1 or not values:
+        return list(values)
+    radius_left = (window - 1) // 2
+    radius_right = window // 2
+    smoothed = []
+    for index in range(len(values)):
+        start = max(0, index - radius_left)
+        end = min(len(values), index + radius_right + 1)
+        window_values = values[start:end]
+        smoothed.append(sum(window_values) / len(window_values))
+    return smoothed

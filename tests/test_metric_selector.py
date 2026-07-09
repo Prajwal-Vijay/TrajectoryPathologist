@@ -1,4 +1,4 @@
-"""Smoke tests for metric-event selection."""
+"""Smoke tests for ECDF-surprise flood key-event selection."""
 
 from __future__ import annotations
 
@@ -7,434 +7,126 @@ from pathlib import Path
 
 from pathologist.events import MetricEventSelector
 from pathologist.schemas import (
-    CameraFrameRef,
     BundleFormat,
-    MetricEvent,
+    CameraFrameRef,
     MetricProfile,
     MetricResult,
     MetricSample,
     TrajectoryBundle,
-    Severity,
-    TimeWindow,
 )
 
 
-def test_metric_selector_fuses_overlapping_metric_events(tmp_path: Path | None = None) -> None:
-    output_dir = tmp_path or Path("/tmp/pathologist_metric_selector_test")
-    debug_path = output_dir / "timeline_debug.json"
-    profile = MetricProfile(
-        bundle_id="demo",
-        metrics=[
-            MetricResult(
-                name="motion_smoothness",
-                description="jerk spikes",
-                samples=[
-                    MetricSample(timestamp_sec=9.0, value=1.0),
-                    MetricSample(timestamp_sec=9.5, value=2.0),
-                    MetricSample(timestamp_sec=10.0, value=12.0),
-                    MetricSample(timestamp_sec=10.5, value=3.0),
-                    MetricSample(timestamp_sec=11.0, value=1.0),
-                ],
-                events=[
-                    MetricEvent(
-                        metric_name="motion_smoothness",
-                        time_window=TimeWindow(10.0),
-                        value=12.0,
-                        severity=Severity.HIGH,
-                        reason="jerk spike",
-                    )
-                ],
-            ),
-            MetricResult(
-                name="gripper_chatter",
-                description="gripper chatter",
-                metadata={
-                    "chatter_bins": [
-                        {"start_sec": 9.0, "end_sec": 9.5, "transition_count": 1},
-                        {"start_sec": 10.05, "end_sec": 10.15, "transition_count": 3},
-                        {"start_sec": 10.25, "end_sec": 10.30, "transition_count": 2},
-                    ],
-                },
-                events=[
-                    MetricEvent(
-                        metric_name="gripper_chatter",
-                        time_window=TimeWindow(9.8, 10.4),
-                        value=3.0,
-                        severity=Severity.MEDIUM,
-                        reason="local chatter burst",
-                    )
-                ],
-            ),
-            MetricResult(
-                name="action_range_saturation",
-                description="action saturation",
-                events=[
-                    MetricEvent(
-                        metric_name="action_range_saturation",
-                        time_window=TimeWindow(10.1, 10.3),
-                        value={"dims": [0]},
-                        severity=Severity.MEDIUM,
-                        reason="action hit bound",
-                    )
-                ],
-            ),
-            MetricResult(
-                name="timestamp_regularity",
-                description="timing anomalies",
-                events=[
-                    MetricEvent(
-                        metric_name="timestamp_regularity",
-                        time_window=TimeWindow(10.1, 10.5),
-                        value=0.2,
-                        severity=Severity.LOW,
-                        reason="gap",
-                    )
-                ],
-            ),
-        ],
-    )
-
-    bundle = TrajectoryBundle(
-        bundle_id="demo",
-        source_format=BundleFormat.CUSTOM,
-        camera_frames=[
-            CameraFrameRef(camera_name="head", timestamp_sec=9.85, image_path=Path("/tmp/head_000.jpg"), frame_index=0),
-            CameraFrameRef(camera_name="head", timestamp_sec=10.10, image_path=Path("/tmp/head_001.jpg"), frame_index=1),
-            CameraFrameRef(camera_name="head", timestamp_sec=10.15, image_path=Path("/tmp/head_002.jpg"), frame_index=2),
-            CameraFrameRef(camera_name="left", timestamp_sec=10.12, image_path=Path("/tmp/left_001.jpg"), frame_index=1),
-            CameraFrameRef(camera_name="left", timestamp_sec=10.18, image_path=Path("/tmp/left_002.jpg"), frame_index=2),
-            CameraFrameRef(camera_name="right", timestamp_sec=10.19, image_path=Path("/tmp/right_001.jpg"), frame_index=1),
-        ],
-    )
-
-    selector = MetricEventSelector(
-        point_event_delta_sec=0.2,
-        frame_stride_within_window=10,
-        metric_packet_context_steps=1,
-        min_segment_duration_sec=0.0,
-    )
-    proposals = selector.select(profile, trajectory_bundle=bundle, debug_timeline_path=debug_path)
-
-    assert proposals
-    assert proposals[0].time_window is not None
-    assert proposals[0].time_window.start_sec == 10.1
-    assert proposals[0].time_window.end_sec == 10.2
-    assert proposals[0].metadata["overlap_metric_count"] == 3
-    assert "timestamp_regularity" not in proposals[0].metadata["metric_names"]
-    assert len(proposals[0].candidate_frames) == 3
-    assert {frame.camera_name for frame in proposals[0].candidate_frames} == {"head", "left", "right"}
-    motion_packet = next(packet for packet in proposals[0].metric_packet if packet.name == "motion_smoothness")
-    assert [sample.timestamp_sec for sample in motion_packet.samples] == [10.0, 10.5]
-    assert motion_packet.metadata["original_sample_count"] == 5
-    assert motion_packet.metadata["local_sample_count"] == 2
-    gripper_packet = next(packet for packet in proposals[0].metric_packet if packet.name == "gripper_chatter")
-    assert gripper_packet.metadata["chatter_bins"] == [
-        {"start_sec": 10.05, "end_sec": 10.15, "transition_count": 3}
-    ]
-    assert gripper_packet.metadata["original_chatter_bins_count"] == 3
-    assert gripper_packet.metadata["local_chatter_bins_count"] == 1
-
-    payload = json.loads(debug_path.read_text(encoding="utf-8"))
-    assert payload["bundle_id"] == "demo"
-    assert payload["point_event_delta_sec"] == 0.2
-    assert payload["metric_packet_context_steps"] == 1
-    assert payload["fused_timeline_segments"][0]["overlap_count"] == 3
-
-
-def test_metric_selector_unions_same_metric_events_before_intersection(tmp_path: Path | None = None) -> None:
-    output_dir = tmp_path or Path("/tmp/pathologist_metric_selector_union_test")
-    debug_path = output_dir / "timeline_debug.json"
-    profile = MetricProfile(
-        bundle_id="demo",
-        metrics=[
-            MetricResult(
-                name="motion_smoothness",
-                description="jerk spikes",
-                events=[
-                    MetricEvent(
-                        metric_name="motion_smoothness",
-                        time_window=TimeWindow(10.0),
-                        value=10.0,
-                        severity=Severity.HIGH,
-                        reason="first jerk spike",
-                    ),
-                    MetricEvent(
-                        metric_name="motion_smoothness",
-                        time_window=TimeWindow(10.1),
-                        value=11.0,
-                        severity=Severity.HIGH,
-                        reason="second jerk spike",
-                    ),
-                ],
-            ),
-            MetricResult(
-                name="gripper_chatter",
-                description="gripper chatter",
-                events=[
-                    MetricEvent(
-                        metric_name="gripper_chatter",
-                        time_window=TimeWindow(10.05, 10.15),
-                        value=2,
-                        severity=Severity.MEDIUM,
-                        reason="chatter burst",
-                    )
-                ],
-            ),
-        ],
-    )
-
-    selector = MetricEventSelector(point_event_delta_sec=0.2, min_segment_duration_sec=0.0)
-    proposals = selector.select(profile, debug_timeline_path=debug_path)
-
-    assert proposals[0].time_window is not None
-    assert proposals[0].time_window.start_sec == 10.05
-    assert proposals[0].time_window.end_sec == 10.15
-    assert proposals[0].metadata["overlap_metric_count"] == 2
-    assert proposals[0].metadata["metric_names"] == ["gripper_chatter", "motion_smoothness"]
-    assert proposals[0].metadata["member_event_ids"] == [
-        "gripper_chatter_event_000",
-        "motion_smoothness_event_000",
-        "motion_smoothness_event_001",
-    ]
-
-    payload = json.loads(debug_path.read_text(encoding="utf-8"))
-    motion_support = [
-        interval
-        for interval in payload["metric_support_intervals"]
-        if interval["metric_name"] == "motion_smoothness"
-    ]
-    assert len(motion_support) == 1
-    assert motion_support[0]["start_sec"] == 9.8
-    assert round(motion_support[0]["end_sec"], 3) == 10.3
-    assert motion_support[0]["member_event_ids"] == [
-        "motion_smoothness_event_000",
-        "motion_smoothness_event_001",
-    ]
-
-
-def test_metric_selector_merges_nearby_same_metric_events_except_gripper_transition(
+def test_metric_selector_extracts_surprise_flood_event_windows(
     tmp_path: Path | None = None,
 ) -> None:
-    output_dir = tmp_path or Path("/tmp/pathologist_metric_selector_same_metric_gap_test")
+    output_dir = tmp_path or Path("/tmp/pathologist_metric_selector_surprise_flood_test")
     debug_path = output_dir / "timeline_debug.json"
-    profile = MetricProfile(
-        bundle_id="demo",
-        metrics=[
-            MetricResult(
-                name="motion_smoothness",
-                description="jerk spikes",
-                events=[
-                    MetricEvent(
-                        metric_name="motion_smoothness",
-                        time_window=TimeWindow(10.0),
-                        value=10.0,
-                        severity=Severity.HIGH,
-                        reason="first jerk spike",
-                    ),
-                    MetricEvent(
-                        metric_name="motion_smoothness",
-                        time_window=TimeWindow(10.5),
-                        value=11.0,
-                        severity=Severity.HIGH,
-                        reason="nearby jerk spike",
-                    ),
-                ],
-            ),
-            MetricResult(
-                name="gripper_transition",
-                description="normal gripper transitions",
-                events=[
-                    MetricEvent(
-                        metric_name="gripper_transition",
-                        time_window=TimeWindow(10.0),
-                        value={"transition_direction": "closed_to_open"},
-                        severity=Severity.LOW,
-                        reason="gripper opened",
-                    ),
-                    MetricEvent(
-                        metric_name="gripper_transition",
-                        time_window=TimeWindow(10.5),
-                        value={"transition_direction": "open_to_closed"},
-                        severity=Severity.LOW,
-                        reason="gripper closed",
-                    ),
-                ],
-            ),
-        ],
+    profile = _aggregate_profile()
+    selector = MetricEventSelector(
+        metric_packet_context_steps=1,
+        surprise_flood_config={
+            "aggregate_metric_name": "ecod_aggregate_score",
+            "smoothing_window": 1,
+            "gamma": 0.5,
+            "max_proposals": 2,
+        },
     )
 
-    selector = MetricEventSelector(
-        point_event_delta_sec=0.1,
-        min_segment_duration_sec=0.0,
-        same_metric_merge_gap_sec=0.35,
-        same_metric_merge_gap_excluded_metric_names={"gripper_transition"},
-        proposal_merge_gap_sec=0.0,
-    )
-    selector.select(profile, debug_timeline_path=debug_path)
+    proposals = selector.select(profile, debug_timeline_path=debug_path)
+
+    assert len(proposals) == 2
+    assert proposals[0].event_id == "demo_surprise_flood_001"
+    assert proposals[0].metadata["selector_mode"] == "surprise_flood"
+    assert proposals[0].metadata["peak_sec"] == 6.0
+    assert proposals[0].metadata["base_score"] == 0.0
+    assert proposals[0].metadata["persistence"] == 8.0
+    assert round(proposals[0].time_window.start_sec, 3) == 5.333
+    assert round(proposals[0].time_window.end_sec, 3) == 6.667
+    assert round(proposals[0].metadata["area_above_base"], 3) == 8.0
+    assert proposals[0].metric_events[0].metric_name == "ecod_aggregate_score"
+    assert proposals[0].metric_packet[0].name == "ecod_aggregate_score"
+    assert [sample.timestamp_sec for sample in proposals[0].metric_packet[0].samples] == [5.0, 6.0, 7.0]
+
+    assert proposals[1].metadata["peak_sec"] == 2.0
+    assert round(proposals[1].time_window.start_sec, 3) == 1.375
+    assert round(proposals[1].time_window.end_sec, 3) == 2.625
 
     payload = json.loads(debug_path.read_text(encoding="utf-8"))
-    motion_support = [
-        interval
-        for interval in payload["metric_support_intervals"]
-        if interval["metric_name"] == "motion_smoothness"
-    ]
-    gripper_support = [
-        interval
-        for interval in payload["metric_support_intervals"]
-        if interval["metric_name"] == "gripper_transition"
-    ]
-
-    assert len(motion_support) == 1
-    assert round(motion_support[0]["start_sec"], 3) == 9.9
-    assert round(motion_support[0]["end_sec"], 3) == 10.6
-    assert motion_support[0]["member_event_ids"] == [
-        "motion_smoothness_event_000",
-        "motion_smoothness_event_001",
-    ]
-    assert len(gripper_support) == 2
-
-
-def test_metric_selector_merges_nearby_proposals_with_same_metric_set() -> None:
-    profile = MetricProfile(
-        bundle_id="demo",
-        metrics=[
-            MetricResult(
-                name="motion_smoothness",
-                description="jerk spikes",
-                events=[
-                    MetricEvent(
-                        metric_name="motion_smoothness",
-                        time_window=TimeWindow(1.0, 1.2),
-                        value=10.0,
-                        severity=Severity.HIGH,
-                        reason="first jerk region",
-                    ),
-                    MetricEvent(
-                        metric_name="motion_smoothness",
-                        time_window=TimeWindow(1.4, 1.6),
-                        value=11.0,
-                        severity=Severity.HIGH,
-                        reason="nearby jerk region",
-                    ),
-                ],
-            ),
-            MetricResult(
-                name="action_discontinuity",
-                description="action jumps",
-                events=[
-                    MetricEvent(
-                        metric_name="action_discontinuity",
-                        time_window=TimeWindow(1.05, 1.15),
-                        value=1.0,
-                        severity=Severity.MEDIUM,
-                        reason="first action jump",
-                    ),
-                    MetricEvent(
-                        metric_name="action_discontinuity",
-                        time_window=TimeWindow(1.45, 1.55),
-                        value=1.2,
-                        severity=Severity.MEDIUM,
-                        reason="nearby action jump",
-                    ),
-                ],
-            ),
-        ],
-    )
-    selector = MetricEventSelector(
-        point_event_delta_sec=0.0,
-        min_segment_duration_sec=0.0,
-        same_metric_merge_gap_sec=0.0,
-        proposal_merge_gap_sec=0.35,
-    )
-
-    proposals = selector.select(profile)
-
-    merged_overlap_proposal = proposals[0]
-    assert merged_overlap_proposal.time_window.start_sec == 1.05
-    assert merged_overlap_proposal.time_window.end_sec == 1.55
-    assert merged_overlap_proposal.metadata["overlap_metric_count"] == 2
-    assert merged_overlap_proposal.metadata["metric_names"] == [
-        "action_discontinuity",
-        "motion_smoothness",
-    ]
-    assert merged_overlap_proposal.metadata["member_event_ids"] == [
-        "action_discontinuity_event_000",
-        "action_discontinuity_event_001",
-        "motion_smoothness_event_000",
-        "motion_smoothness_event_001",
-    ]
+    assert payload["selector_mode"] == "surprise_flood"
+    assert len(payload["surprise_flood_events"]) == 2
+    assert payload["surprise_flood_events"][0]["peak_sec"] == 6.0
 
 
 def test_metric_selector_attaches_visual_context_frames() -> None:
+    bundle = TrajectoryBundle(
+        bundle_id="demo",
+        source_format=BundleFormat.CUSTOM,
+        camera_frames=[
+            CameraFrameRef(camera_name="head", timestamp_sec=5.0, image_path=Path("/tmp/head_050.jpg"), frame_index=50),
+            CameraFrameRef(camera_name="head", timestamp_sec=5.5, image_path=Path("/tmp/head_055.jpg"), frame_index=55),
+            CameraFrameRef(camera_name="head", timestamp_sec=6.0, image_path=Path("/tmp/head_060.jpg"), frame_index=60),
+            CameraFrameRef(camera_name="head", timestamp_sec=6.5, image_path=Path("/tmp/head_065.jpg"), frame_index=65),
+            CameraFrameRef(camera_name="head", timestamp_sec=7.0, image_path=Path("/tmp/head_070.jpg"), frame_index=70),
+            CameraFrameRef(camera_name="wrist", timestamp_sec=6.0, image_path=Path("/tmp/wrist_060.jpg"), frame_index=60),
+        ],
+    )
+    selector = MetricEventSelector(
+        frame_stride_within_window=1,
+        visual_context_sec=0.2,
+        max_frames_per_camera=3,
+        surprise_flood_config={
+            "aggregate_metric_name": "ecod_aggregate_score",
+            "smoothing_window": 1,
+            "gamma": 0.5,
+            "max_proposals": 1,
+        },
+    )
+
+    proposals = selector.select(_aggregate_profile(), trajectory_bundle=bundle)
+
+    assert proposals
+    assert [frame.frame_index for frame in proposals[0].candidate_frames] == [55, 60, 65, 60]
+    assert {frame.camera_name for frame in proposals[0].candidate_frames} == {"head", "wrist"}
+
+
+def test_metric_selector_returns_no_proposals_without_aggregate_score() -> None:
     profile = MetricProfile(
         bundle_id="demo",
         metrics=[
             MetricResult(
                 name="motion_smoothness",
-                description="jerk spikes",
-                events=[
-                    MetricEvent(
-                        metric_name="motion_smoothness",
-                        time_window=TimeWindow(229.6),
-                        value=100.0,
-                        severity=Severity.HIGH,
-                        reason="jerk spike",
-                    )
+                description="raw jerk",
+                samples=[
+                    MetricSample(timestamp_sec=0.0, value=1.0),
+                    MetricSample(timestamp_sec=1.0, value=2.0),
+                    MetricSample(timestamp_sec=2.0, value=1.0),
                 ],
             )
         ],
     )
-    bundle = TrajectoryBundle(
-        bundle_id="demo",
-        source_format=BundleFormat.CUSTOM,
-        camera_frames=[
-            CameraFrameRef(camera_name="head", timestamp_sec=229.5, image_path=Path("/tmp/head_459.jpg"), frame_index=459),
-            CameraFrameRef(camera_name="head", timestamp_sec=230.0, image_path=Path("/tmp/head_460.jpg"), frame_index=460),
-            CameraFrameRef(camera_name="head", timestamp_sec=230.5, image_path=Path("/tmp/head_461.jpg"), frame_index=461),
-            CameraFrameRef(camera_name="head", timestamp_sec=232.0, image_path=Path("/tmp/head_464.jpg"), frame_index=464),
-        ],
-    )
 
-    selector = MetricEventSelector(
-        point_event_delta_sec=0.2,
-        frame_stride_within_window=1,
-        visual_context_sec=1.0,
-        max_frames_per_camera=5,
-    )
-    proposals = selector.select(profile, trajectory_bundle=bundle)
-
-    assert proposals[0].time_window.start_sec == 229.4
-    assert proposals[0].time_window.end_sec == 229.79999999999998
-    assert [frame.frame_index for frame in proposals[0].candidate_frames] == [459, 460, 461]
+    assert MetricEventSelector().select(profile) == []
 
 
-def test_metric_selector_keeps_point_event_windows_at_configured_min_duration() -> None:
-    profile = MetricProfile(
+def _aggregate_profile() -> MetricProfile:
+    return MetricProfile(
         bundle_id="demo",
         metrics=[
             MetricResult(
-                name="gripper_transition",
-                description="gripper transitions",
-                events=[
-                    MetricEvent(
-                        metric_name="gripper_transition",
-                        time_window=TimeWindow(1.0),
-                        value={"transition_direction": "closed_to_open"},
-                        severity=Severity.LOW,
-                        reason="gripper opened",
-                    )
+                name="ecod_aggregate_score",
+                description="aggregate surprise",
+                unit="surprise",
+                samples=[
+                    MetricSample(timestamp_sec=0.0, value=0.0),
+                    MetricSample(timestamp_sec=1.0, value=1.0),
+                    MetricSample(timestamp_sec=2.0, value=5.0),
+                    MetricSample(timestamp_sec=3.0, value=1.0),
+                    MetricSample(timestamp_sec=4.0, value=0.0),
+                    MetricSample(timestamp_sec=5.0, value=2.0),
+                    MetricSample(timestamp_sec=6.0, value=8.0),
+                    MetricSample(timestamp_sec=7.0, value=2.0),
+                    MetricSample(timestamp_sec=8.0, value=0.0),
                 ],
             )
         ],
     )
-    selector = MetricEventSelector(
-        point_event_delta_sec=0.2,
-        min_segment_duration_sec=0.2,
-    )
-
-    proposals = selector.select(profile)
-
-    assert len(proposals) == 1
-    assert proposals[0].time_window.start_sec == 0.8
-    assert proposals[0].time_window.end_sec == 1.2
-    assert proposals[0].metadata["metric_names"] == ["gripper_transition"]

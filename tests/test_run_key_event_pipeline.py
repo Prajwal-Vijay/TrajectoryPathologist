@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from pathologist.run_key_event_pipeline import run_key_event_pipeline
+from pathologist.run_key_event_pipeline import (
+    _centered_moving_average,
+    _selected_ecod_plot_components,
+    run_key_event_pipeline,
+)
 from pathologist.schemas import TaskContract
 
 
@@ -58,7 +62,6 @@ def test_run_key_event_pipeline_writes_outputs(tmp_path: Path) -> None:
             success_criteria="The handle is lifted stably.",
             failure_criteria="The handle is dropped or handled unstably.",
         ),
-        point_event_delta_sec=0.1,
         frame_stride_within_window=10,
         max_events_to_label=2,
         event_label_client=FakeEventLabelClient(),
@@ -83,6 +86,15 @@ def test_run_key_event_pipeline_writes_outputs(tmp_path: Path) -> None:
     assert "visual_label" in key_events[0]["label"]["metadata"]
     assert "metric_grounding_cards" in key_events[0]["label"]["metadata"]
     assert Path(summary["effective_config_path"]).exists()
+    assert summary["ecod_score_plots"]["enabled"] is True
+    assert (Path(summary["output_dir"]) / "ecod_score_plots" / "plot_status.json").exists()
+
+    metric_profile = json.loads(Path(summary["metric_profile_path"]).read_text(encoding="utf-8"))
+    metric_names = [metric["name"] for metric in metric_profile["metrics"]]
+    assert "action_discontinuity_ecod_score" in metric_names
+    assert "motion_smoothness_ecod_score" in metric_names
+    assert "stalling_ecod_score" in metric_names
+    assert "ecod_aggregate_score" in metric_names
 
 
 def test_run_key_event_pipeline_uses_bundle_config(tmp_path: Path) -> None:
@@ -100,7 +112,6 @@ def test_run_key_event_pipeline_uses_bundle_config(tmp_path: Path) -> None:
                     }
                 },
                 "selector": {
-                    "point_event_delta_sec": 0.05,
                     "frame_stride_within_window": 1
                 },
                 "labeling": {
@@ -128,8 +139,18 @@ def test_run_key_event_pipeline_uses_bundle_config(tmp_path: Path) -> None:
     key_events = json.loads(Path(summary["key_events_path"]).read_text(encoding="utf-8"))
 
     assert effective_config["metrics"]["gripper_chatter"]["min_chatter_transitions"] == 10
-    assert timeline_debug["point_event_delta_sec"] == 0.05
+    assert timeline_debug["selector_mode"] == "surprise_flood"
     assert len(key_events) <= 1
+
+
+def test_selected_ecod_plot_components_defaults_to_actual_score() -> None:
+    assert _selected_ecod_plot_components(False, False, False) == {"actual"}
+    assert _selected_ecod_plot_components(True, False, True) == {"left", "skew"}
+
+
+def test_centered_moving_average_uses_partial_edge_windows() -> None:
+    assert _centered_moving_average([1.0, 2.0, 7.0, 10.0], 3) == [1.5, 10.0 / 3.0, 19.0 / 3.0, 8.5]
+    assert _centered_moving_average([1.0, 2.0], 1) == [1.0, 2.0]
 
 
 def _telemetry_rows() -> list[dict]:
