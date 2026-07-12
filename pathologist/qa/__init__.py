@@ -7,7 +7,9 @@ from pathologist.qa.robofac import (
     extract_options_from_question,
     load_robofac_qa_items,
     normalize_answer,
+    parse_failure_detection_answer,
     parse_option_from_answer,
+    score_failure_detection_answer,
     score_mcq_answer,
 )
 from pathologist.qa.robofac_client import OpenAIRoboFACQAClient
@@ -21,7 +23,9 @@ __all__ = [
     "extract_options_from_question",
     "load_robofac_qa_items",
     "normalize_answer",
+    "parse_failure_detection_answer",
     "parse_option_from_answer",
+    "score_failure_detection_answer",
     "score_mcq_answer",
     "select_keyframes",
 ]

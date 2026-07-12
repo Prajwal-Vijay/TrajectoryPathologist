@@ -143,6 +143,61 @@ class RoboFACBundleAdapter:
             raw_metadata=raw_metadata,
         )
 
+    def load_video_only(
+        self,
+        video_path: str | Path,
+        task_contract: TaskContract | None = None,
+        bundle_id: str | None = None,
+        frame_cache_dir: str | Path | None = None,
+        video_id: str | None = None,
+        task_name: str | None = None,
+    ) -> TrajectoryBundle:
+        """Load a RoboFAC sample when only the video demonstration is available."""
+
+        resolved_video_path = Path(video_path).expanduser().resolve()
+        if not resolved_video_path.exists():
+            raise FileNotFoundError(f"Could not find RoboFAC video: {resolved_video_path}")
+
+        resolved_video_id = video_id or resolved_video_path.stem
+        video_metadata = _video_metadata(resolved_video_path)
+        frame_cache = (
+            Path(frame_cache_dir).expanduser().resolve()
+            if frame_cache_dir is not None
+            else resolved_video_path.parent / "pathologist_frame_cache" / resolved_video_path.stem
+        )
+        camera_frames = materialize_video_frames(
+            video_path=resolved_video_path,
+            frame_cache_dir=frame_cache,
+            fps=video_metadata["fps"],
+        )
+        duration_sec = (
+            video_metadata["frame_count"] / video_metadata["fps"]
+            if video_metadata["fps"] > 0
+            else None
+        )
+        raw_metadata = {
+            "dataset": "RoboFAC",
+            "video_id": resolved_video_id,
+            "video_path": str(resolved_video_path),
+            "task_name": task_name,
+            "frame_count": video_metadata["frame_count"],
+            "fps": video_metadata["fps"],
+            "duration_sec": duration_sec,
+            "frame_cache_dir": str(frame_cache),
+            "video_only": True,
+            "alignment_validation_notes": ["trajectory telemetry unavailable; loaded video frames only"],
+        }
+        return TrajectoryBundle(
+            bundle_id=bundle_id or resolved_video_id,
+            source_format=BundleFormat.CUSTOM,
+            root_path=resolved_video_path,
+            task_contract=task_contract,
+            duration_sec=duration_sec,
+            streams=[],
+            camera_frames=camera_frames,
+            raw_metadata=raw_metadata,
+        )
+
 
 def resolve_episode_match(
     video_id: str,

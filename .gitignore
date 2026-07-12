@@ -1,3 +1,5 @@
 pathologist/left_handle_failure/
 __pycache__/
 *.py[cod]
+robofac_outputs/
+RoboFAC-dataset/

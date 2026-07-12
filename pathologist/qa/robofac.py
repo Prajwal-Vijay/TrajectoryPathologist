@@ -19,6 +19,8 @@ DEFAULT_ROBOFAC_MCQ_TYPES = (
     "Failure locating",
 )
 
+FAILURE_DETECTION_OPTIONS = ("Yes.", "No.", "Uncertain.")
+
 
 @dataclass(slots=True)
 class RoboFACQAItem:
@@ -112,8 +114,10 @@ def build_qa_prompt(
     """Build a selector-agnostic RoboFAC prompt with no metric values."""
 
     question = item.question.replace("<image>", "").strip()
+    answer_options = response_options_for_item(item)
+    answer_instruction = _strict_option_instruction(answer_options)
     if not include_shared_context:
-        return question
+        return f"{question}\n\n{answer_instruction}"
     frame_lines = [
         f"frame_{index}: timestamp_sec={frame.timestamp_sec:.3f}, original_frame_index={frame.frame_index}"
         for index, frame in enumerate(selected_frames)
@@ -128,7 +132,7 @@ def build_qa_prompt(
             *frame_lines,
         ]
     )
-    return f"{question}\n\n[CONTEXT]\n{context}"
+    return f"{question}\n\n{answer_instruction}\n\n[CONTEXT]\n{context}"
 
 
 def extract_options_from_question(question_text: str) -> list[str]:
@@ -189,6 +193,62 @@ def score_mcq_answer(prediction: str, reference: str, options: list[str] | None 
     return correct, parsed, 1.0 if correct else 0.0
 
 
+def score_failure_detection_answer(prediction: str, reference: str) -> tuple[bool, str | None, float]:
+    """Score failure-detection answers by explicitly parsing yes/no/uncertain."""
+
+    parsed_prediction = parse_failure_detection_answer(prediction)
+    parsed_reference = parse_failure_detection_answer(reference)
+    correct = (
+        parsed_prediction is not None
+        and parsed_reference is not None
+        and parsed_prediction == parsed_reference
+    )
+    return correct, parsed_prediction, 1.0 if correct else 0.0
+
+
+def parse_failure_detection_answer(answer_text: str) -> str | None:
+    """Parse failure-detection answers into Yes., No., or Uncertain."""
+
+    if not answer_text:
+        return None
+    normalized = normalize_answer(answer_text)
+    if not normalized:
+        return None
+
+    exact_map = {
+        "yes": "Yes.",
+        "no": "No.",
+        "uncertain": "Uncertain.",
+        "unsure": "Uncertain.",
+        "unknown": "Uncertain.",
+        "unclear": "Uncertain.",
+    }
+    if normalized in exact_map:
+        return exact_map[normalized]
+
+    categories: set[str] = set()
+    if re.search(r"\byes\b", normalized):
+        categories.add("Yes.")
+    if re.search(r"\bno\b", normalized):
+        categories.add("No.")
+    if re.search(r"\b(uncertain|unsure|unknown|unclear)\b", normalized):
+        categories.add("Uncertain.")
+    if re.search(r"\b(can ?not|cant|cannot) (determine|tell|say)\b", normalized):
+        categories.add("Uncertain.")
+
+    if len(categories) == 1:
+        return next(iter(categories))
+    return None
+
+
+def response_options_for_item(item: RoboFACQAItem) -> list[str]:
+    """Return the exact response options the QA model should choose from."""
+
+    if item.question_type == "Failure detection":
+        return list(FAILURE_DETECTION_OPTIONS)
+    return item.options
+
+
 def normalize_answer(text: str) -> str:
     """Normalize text similarly to common QA/MCQ evaluation scripts."""
 
@@ -198,6 +258,23 @@ def normalize_answer(text: str) -> str:
     text = re.sub(r"\b(a|an|the)\b", " ", text)
     text = re.sub(r"\s+", " ", text)
     return text.strip()
+
+
+def _strict_option_instruction(options: list[str]) -> str:
+    if not options:
+        return (
+            "Answer format: return only the final answer string. "
+            "Do not include reasoning, explanation, labels, or extra text."
+        )
+    option_lines = "\n".join(f"- {option}" for option in options)
+    return "\n".join(
+        [
+            "Answer format: choose exactly one option below.",
+            option_lines,
+            "Return exactly the option string and nothing else.",
+            "Do not include reasoning, explanation, labels, punctuation changes, or extra text.",
+        ]
+    )
 
 
 def aggregate_predictions(predictions: list[RoboFACPrediction]) -> dict[str, Any]:

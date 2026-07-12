@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
+import re
 import urllib.error
 import urllib.request
 from collections import defaultdict
@@ -19,6 +21,7 @@ from pathologist.qa.robofac import (
     aggregate_predictions,
     build_qa_prompt,
     load_robofac_qa_items,
+    score_failure_detection_answer,
     score_mcq_answer,
 )
 from pathologist.qa.robofac_client import OpenAIRoboFACQAClient, RoboFACQAClient, StaticRoboFACQAClient
@@ -40,12 +43,15 @@ def run_robofac_qa_pipeline(
     traj_json_path: str | Path | None = None,
     video_root: str | Path | None = None,
     data_root: str | Path | None = None,
+    dataset_root: str | Path | None = None,
     video_path: str | Path | None = None,
     output_dir: str | Path = "robofac_outputs",
     question_types: list[str] | None = None,
     selectors: list[str] | None = None,
     frame_budget: int = 5,
     max_videos: int | None = None,
+    shuffle_videos: bool = False,
+    video_sample_seed: int | None = None,
     config_path: str | Path | None = None,
     qa_client: RoboFACQAClient | None = None,
     openai_model: str | None = None,
@@ -61,17 +67,30 @@ def run_robofac_qa_pipeline(
     resolved_question_types = question_types or list(DEFAULT_ROBOFAC_MCQ_TYPES)
     resolved_selectors = selectors or ["uniform", "kite_flow", "metric"]
     config = load_pipeline_config(config_path=config_path)
-    items = load_robofac_qa_items(annotation_path, question_types=set(resolved_question_types))
+    annotation_paths = _resolve_annotation_paths(annotation_path)
+    items = [
+        item
+        for current_annotation_path in annotation_paths
+        for item in load_robofac_qa_items(
+            current_annotation_path,
+            question_types=set(resolved_question_types),
+        )
+    ]
     _log(
         verbose,
         (
-            f"Loaded {len(items)} QA item(s) from {annotation_path} "
+            f"Loaded {len(items)} QA item(s) from {len(annotation_paths)} annotation file(s) "
             f"for question types {resolved_question_types}."
         ),
     )
     items_by_video: dict[str, list[Any]] = defaultdict(list)
     for item in items:
         items_by_video[item.video_id].append(item)
+    video_work_items = _video_items_for_sampling(
+        items_by_video,
+        shuffle_videos=shuffle_videos,
+        video_sample_seed=video_sample_seed,
+    )
 
     adapter = RoboFACBundleAdapter()
     client = qa_client
@@ -83,14 +102,23 @@ def run_robofac_qa_pipeline(
     alignment_debug: list[dict[str, Any]] = []
     processed_video_count = 0
     explicit_video_path = Path(video_path).expanduser().resolve() if video_path is not None else None
-    resolved_data_root = Path(data_root).expanduser().resolve() if data_root is not None else None
+    resolved_dataset_root = (
+        Path(dataset_root).expanduser().resolve()
+        if dataset_root is not None
+        else _infer_dataset_root(annotation_paths)
+    )
+    resolved_data_root = (
+        Path(data_root).expanduser().resolve()
+        if data_root is not None
+        else resolved_dataset_root
+    )
     resolved_video_root = (
         Path(video_root).expanduser().resolve()
         if video_root is not None
         else resolved_data_root
     )
 
-    for video_id, video_items in items_by_video.items():
+    for video_id, video_items in video_work_items:
         if max_videos is not None and processed_video_count >= max_videos:
             break
         _log(
@@ -133,7 +161,7 @@ def run_robofac_qa_pipeline(
             continue
         _log(verbose, f"[{video_id}] Video: {candidate_video_path}")
         try:
-            candidate_h5_path, candidate_traj_json_path = _resolve_trajectory_files(
+            trajectory_files = _resolve_trajectory_files(
                 video_rel_path=video_items[0].video_rel_path,
                 explicit_h5_path=Path(h5_path).expanduser().resolve() if h5_path is not None else None,
                 explicit_traj_json_path=(
@@ -146,6 +174,7 @@ def run_robofac_qa_pipeline(
                 hf_base_url=hf_base_url,
                 download_dir=output_path / "downloaded_data",
                 verbose=verbose,
+                allow_missing=True,
             )
         except Exception as exc:
             _log(verbose, f"[{video_id}] Skipped: trajectory files unavailable ({type(exc).__name__}: {exc}).")
@@ -160,16 +189,47 @@ def run_robofac_qa_pipeline(
                 }
             )
             continue
-        _log(verbose, f"[{video_id}] H5: {candidate_h5_path}")
-        _log(verbose, f"[{video_id}] Trajectory JSON: {candidate_traj_json_path}")
+        candidate_h5_path = None
+        candidate_traj_json_path = None
+        if trajectory_files is not None:
+            candidate_h5_path, candidate_traj_json_path = trajectory_files
+            _log(verbose, f"[{video_id}] H5: {candidate_h5_path}")
+            _log(verbose, f"[{video_id}] Trajectory JSON: {candidate_traj_json_path}")
+        else:
+            _log(verbose, f"[{video_id}] Trajectory files not found; using video-only selectors.")
         try:
-            bundle = adapter.load(
-                video_path=candidate_video_path,
-                h5_path=candidate_h5_path,
-                traj_json_path=candidate_traj_json_path,
-                frame_cache_dir=output_path / "frame_cache" / video_id,
-                video_id=video_id,
-            )
+            if candidate_h5_path is not None and candidate_traj_json_path is not None:
+                try:
+                    bundle = adapter.load(
+                        video_path=candidate_video_path,
+                        h5_path=candidate_h5_path,
+                        traj_json_path=candidate_traj_json_path,
+                        frame_cache_dir=output_path / "frame_cache" / video_id,
+                        video_id=video_id,
+                    )
+                except ModuleNotFoundError as exc:
+                    if not _has_video_only_selector(resolved_selectors):
+                        raise
+                    _log(
+                        verbose,
+                        (
+                            f"[{video_id}] Telemetry adapter unavailable ({exc}); "
+                            "falling back to video-only selectors."
+                        ),
+                    )
+                    bundle = adapter.load_video_only(
+                        video_path=candidate_video_path,
+                        frame_cache_dir=output_path / "frame_cache" / video_id,
+                        video_id=video_id,
+                        task_name=video_items[0].task,
+                    )
+            else:
+                bundle = adapter.load_video_only(
+                    video_path=candidate_video_path,
+                    frame_cache_dir=output_path / "frame_cache" / video_id,
+                    video_id=video_id,
+                    task_name=video_items[0].task,
+                )
         except Exception as exc:
             _log(verbose, f"[{video_id}] Skipped: adapter failed ({type(exc).__name__}: {exc}).")
             alignment_debug.append(
@@ -179,6 +239,21 @@ def run_robofac_qa_pipeline(
                     "reason": type(exc).__name__,
                     "message": str(exc),
                     "video_path": str(candidate_video_path),
+                }
+            )
+            continue
+
+        video_selectors = _selectors_available_for_bundle(resolved_selectors, bundle.raw_metadata)
+        if not video_selectors:
+            _log(verbose, f"[{video_id}] Skipped: no requested selector is available.")
+            alignment_debug.append(
+                {
+                    "video_id": video_id,
+                    "status": "skipped",
+                    "reason": "selectors_unavailable",
+                    "video_path": str(candidate_video_path),
+                    "requested_selectors": resolved_selectors,
+                    "video_only": bool(bundle.raw_metadata.get("video_only")),
                 }
             )
             continue
@@ -198,8 +273,13 @@ def run_robofac_qa_pipeline(
                 "task": video_items[0].task,
                 "annotation_types": [item.question_type for item in video_items],
                 "video_path": str(candidate_video_path),
-                "h5_path": str(candidate_h5_path),
-                "traj_json_path": str(candidate_traj_json_path),
+                "h5_path": str(candidate_h5_path) if candidate_h5_path is not None else None,
+                "traj_json_path": str(candidate_traj_json_path) if candidate_traj_json_path is not None else None,
+                "video_only": bool(bundle.raw_metadata.get("video_only")),
+                "selectors": video_selectors,
+                "omitted_selectors": [
+                    selector for selector in resolved_selectors if selector not in video_selectors
+                ],
                 "matched_episode_id": bundle.raw_metadata.get("episode_id"),
                 "matched_traj_key": bundle.raw_metadata.get("traj_key"),
                 "frame_count": bundle.raw_metadata.get("frame_count"),
@@ -210,7 +290,7 @@ def run_robofac_qa_pipeline(
             }
         )
         metric_profile = None
-        if "metric" in resolved_selectors:
+        if "metric" in video_selectors:
             _log(verbose, f"[{video_id}] Computing metric profile for metric selector.")
             metric_profile = MetricEngine(config=config).compute(bundle)
         selected_frames_by_selector = {
@@ -221,7 +301,7 @@ def run_robofac_qa_pipeline(
                 metric_profile=metric_profile,
                 config=config,
             )
-            for selector_name in resolved_selectors
+            for selector_name in video_selectors
         }
         for selector_name, selected_frames in selected_frames_by_selector.items():
             _log(
@@ -242,11 +322,17 @@ def run_robofac_qa_pipeline(
                 parsed = None
                 score = None
                 if item.question_type in DEFAULT_ROBOFAC_MCQ_TYPES and raw_prediction:
-                    correct, parsed, score = score_mcq_answer(
-                        prediction=raw_prediction,
-                        reference=item.reference_answer,
-                        options=item.options,
-                    )
+                    if item.question_type == "Failure detection":
+                        correct, parsed, score = score_failure_detection_answer(
+                            prediction=raw_prediction,
+                            reference=item.reference_answer,
+                        )
+                    else:
+                        correct, parsed, score = score_mcq_answer(
+                            prediction=raw_prediction,
+                            reference=item.reference_answer,
+                            options=item.options,
+                        )
                 predictions.append(
                     RoboFACPrediction(
                         video_id=item.video_id,
@@ -283,10 +369,15 @@ def run_robofac_qa_pipeline(
     alignment_path.write_text(json.dumps(alignment_debug, indent=2), encoding="utf-8")
     summary = {
         "annotation_path": str(Path(annotation_path).expanduser().resolve()),
+        "annotation_paths": [str(path) for path in annotation_paths],
+        "dataset_root": str(resolved_dataset_root) if resolved_dataset_root is not None else None,
+        "data_root": str(resolved_data_root) if resolved_data_root is not None else None,
         "output_dir": str(output_path),
         "question_types": resolved_question_types,
         "selectors": resolved_selectors,
         "frame_budget": frame_budget,
+        "shuffle_videos": shuffle_videos,
+        "video_sample_seed": video_sample_seed,
         "qa_item_count": len(items),
         "processed_video_count": processed_video_count,
         "prediction_count": len(predictions),
@@ -308,15 +399,27 @@ def run_robofac_qa_pipeline(
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run RoboFAC keyframe-selection QA evaluation.")
-    parser.add_argument("--annotations", required=True, help="Path to annos_per_video_split*.json.")
+    parser.add_argument(
+        "--annotations",
+        required=True,
+        help="Path to one annos_per_video*.json file, or a directory containing them.",
+    )
     parser.add_argument("--h5-path", help="Optional explicit RoboFAC/ManiSkill trajectory .h5 file.")
     parser.add_argument("--traj-json-path", help="Optional explicit matching trajectory metadata JSON.")
     parser.add_argument("--video-root", help="Root containing videos in annotation-relative paths.")
     parser.add_argument(
         "--data-root",
         help=(
-            "Root containing RoboFAC simulation_data-style folders. Used to resolve videos "
-            "and per-folder ToolsTask_traj.h5/json when explicit paths are omitted."
+            "Root containing RoboFAC demo folders. May be the full RoboFAC-dataset root, "
+            "simulation_data, or realworld_data."
+        ),
+    )
+    parser.add_argument(
+        "--dataset-root",
+        default="RoboFAC-dataset",
+        help=(
+            "Full local RoboFAC-dataset root used to resolve simulation_data/ and realworld_data/. "
+            "Defaults to ./RoboFAC-dataset when run from the project root."
         ),
     )
     parser.add_argument("--video-path", help="Single local video path for smoke tests.")
@@ -336,6 +439,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--frame-budget", type=int, default=5, help="Number of keyframes per selector.")
     parser.add_argument("--max-videos", type=int, help="Optional maximum number of videos to process.")
+    parser.add_argument(
+        "--shuffle-videos",
+        action="store_true",
+        help="Shuffle video processing order before applying --max-videos.",
+    )
+    parser.add_argument(
+        "--video-sample-seed",
+        type=int,
+        help=(
+            "Seed for reproducible shuffled video sampling. Providing this also enables "
+            "shuffling even if --shuffle-videos is omitted."
+        ),
+    )
     parser.add_argument("--config-path", help="Optional pathologist config override.")
     parser.add_argument("--openai-model", help="OpenAI model for QA calls.")
     parser.add_argument("--skip-vlm", action="store_true", help="Build manifest/selected frames without VLM calls.")
@@ -364,12 +480,15 @@ def main() -> None:
         traj_json_path=args.traj_json_path,
         video_root=args.video_root,
         data_root=args.data_root,
+        dataset_root=args.dataset_root,
         video_path=args.video_path,
         output_dir=args.output_dir,
         question_types=args.question_types,
         selectors=args.selectors,
         frame_budget=args.frame_budget,
         max_videos=args.max_videos,
+        shuffle_videos=args.shuffle_videos,
+        video_sample_seed=args.video_sample_seed,
         config_path=args.config_path,
         openai_model=args.openai_model,
         skip_vlm=args.skip_vlm,
@@ -393,17 +512,19 @@ def _resolve_video_path(
     if explicit_video_path is not None and explicit_video_path.stem == video_id and explicit_video_path.exists():
         return explicit_video_path
     if video_root is not None:
-        candidates = [
-            video_root / video_rel_path,
-            video_root / Path(video_rel_path).name,
-            video_root / f"{video_id}.mp4",
-        ]
-        for candidate in candidates:
-            if candidate.exists() and candidate.is_file():
-                return candidate.resolve()
-        matches = list(video_root.rglob(f"{video_id}.mp4"))
-        if matches:
-            return matches[0].resolve()
+        for root in _candidate_roots(video_root):
+            candidates = [
+                root / video_rel_path,
+                root / Path(video_rel_path).name,
+                root / f"{video_id}.mp4",
+            ]
+            for candidate in candidates:
+                if candidate.exists() and candidate.is_file():
+                    return candidate.resolve()
+        for root in _candidate_roots(video_root):
+            matches = sorted(root.rglob(f"{video_id}.mp4"), key=_natural_path_sort_key)
+            if matches:
+                return matches[0].resolve()
     if download_missing and hf_base_url and video_rel_path:
         if download_dir is None:
             return None
@@ -418,9 +539,93 @@ def _resolve_video_path(
     return None
 
 
+def _candidate_roots(root: Path | None) -> list[Path]:
+    if root is None:
+        return []
+    candidates = [root]
+    for child_name in ("simulation_data", "realworld_data"):
+        child = root / child_name
+        if child.exists() and child.is_dir():
+            candidates.append(child)
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved not in seen:
+            unique.append(resolved)
+            seen.add(resolved)
+    return unique
+
+
 def _log(verbose: bool, message: str) -> None:
     if verbose:
         print(f"[robofac] {message}", flush=True)
+
+
+def _resolve_annotation_paths(annotation_path: str | Path) -> list[Path]:
+    path = Path(annotation_path).expanduser()
+    if path.is_file():
+        return [path.resolve()]
+    if not path.exists():
+        raise FileNotFoundError(f"RoboFAC annotation path does not exist: {path}")
+    if not path.is_dir():
+        raise ValueError(f"RoboFAC annotation path must be a file or directory: {path}")
+    matches = sorted(
+        [candidate.resolve() for candidate in path.rglob("annos_per_video*.json") if candidate.is_file()],
+        key=_natural_path_sort_key,
+    )
+    if not matches:
+        raise FileNotFoundError(f"No annos_per_video*.json files found under: {path}")
+    return matches
+
+
+def _infer_dataset_root(annotation_paths: list[Path]) -> Path | None:
+    for annotation_path in annotation_paths:
+        for parent in annotation_path.parents:
+            if parent.name == "RoboFAC-dataset":
+                return parent.resolve()
+        if annotation_path.parent.name in {"test_qa_sim", "test_qa_realworld"}:
+            return annotation_path.parent.parent.resolve()
+    local_dataset_root = Path("RoboFAC-dataset")
+    if local_dataset_root.exists() and local_dataset_root.is_dir():
+        return local_dataset_root.resolve()
+    return None
+
+
+def _natural_path_sort_key(path: Path) -> list[int | str]:
+    return [
+        int(part) if part.isdigit() else part
+        for part in re.split(r"(\d+)", str(path))
+    ]
+
+
+def _selectors_available_for_bundle(
+    requested_selectors: list[str],
+    raw_metadata: dict[str, Any],
+) -> list[str]:
+    if not raw_metadata.get("video_only"):
+        return requested_selectors
+    return [
+        selector
+        for selector in requested_selectors
+        if selector.lower() not in {"metric"}
+    ]
+
+
+def _has_video_only_selector(requested_selectors: list[str]) -> bool:
+    return any(selector.lower() != "metric" for selector in requested_selectors)
+
+
+def _video_items_for_sampling(
+    items_by_video: dict[str, list[Any]],
+    shuffle_videos: bool,
+    video_sample_seed: int | None,
+) -> list[tuple[str, list[Any]]]:
+    video_items = list(items_by_video.items())
+    if shuffle_videos or video_sample_seed is not None:
+        rng = random.Random(video_sample_seed)
+        rng.shuffle(video_items)
+    return video_items
 
 
 def _resolve_trajectory_files(
@@ -432,7 +637,8 @@ def _resolve_trajectory_files(
     hf_base_url: str | None,
     download_dir: Path,
     verbose: bool = False,
-) -> tuple[Path, Path]:
+    allow_missing: bool = False,
+) -> tuple[Path, Path] | None:
     if explicit_h5_path is not None and explicit_traj_json_path is not None:
         if not explicit_h5_path.exists():
             raise FileNotFoundError(f"Explicit H5 path does not exist: {explicit_h5_path}")
@@ -441,33 +647,32 @@ def _resolve_trajectory_files(
         return explicit_h5_path, explicit_traj_json_path
 
     folder_rel = str(Path(video_rel_path).parent)
-    local_folder = data_root / folder_rel if data_root is not None else None
-    h5_candidates = []
-    json_candidates = []
-    if local_folder is not None:
-        h5_candidates.extend(
-            [
-                local_folder / "ToolsTask_traj.h5",
-                local_folder / "ToolsTask_traj.hdf5",
-            ]
-        )
-        json_candidates.append(local_folder / "ToolsTask_traj.json")
+    local_folders = [
+        root / folder_rel
+        for root in _candidate_roots(data_root)
+    ]
+    h5_candidates: list[Path] = []
+    json_candidates: list[Path] = []
+    for local_folder in local_folders:
+        h5_candidates.extend(_trajectory_h5_candidates(local_folder))
+        json_candidates.extend(_trajectory_json_candidates(local_folder))
     if explicit_h5_path is not None:
         h5_candidates.insert(0, explicit_h5_path)
     if explicit_traj_json_path is not None:
         json_candidates.insert(0, explicit_traj_json_path)
 
-    h5_path = next((candidate for candidate in h5_candidates if candidate.exists()), None)
-    json_path = next((candidate for candidate in json_candidates if candidate.exists()), None)
+    h5_path, json_path = _first_existing_trajectory_pair(h5_candidates, json_candidates)
     if h5_path is not None and json_path is not None:
         return h5_path.resolve(), json_path.resolve()
 
     if not download_missing or not hf_base_url:
+        if allow_missing:
+            return None
         missing = []
         if h5_path is None:
-            missing.append("ToolsTask_traj.h5")
+            missing.append("*.h5")
         if json_path is None:
-            missing.append("ToolsTask_traj.json")
+            missing.append("*.json")
         raise FileNotFoundError(
             f"Missing RoboFAC trajectory file(s) in {folder_rel}: {', '.join(missing)}. "
             "Pass --data-root with local RoboFAC folders or use --download-missing."
@@ -488,6 +693,61 @@ def _resolve_trajectory_files(
             verbose=verbose,
         )
     return h5_path.resolve(), json_path.resolve()
+
+
+def _trajectory_h5_candidates(folder: Path) -> list[Path]:
+    return _unique_paths(
+        [
+            folder / "ToolsTask_traj.h5",
+            folder / "ToolsTask_traj.hdf5",
+            folder / f"{folder.name}.h5",
+            folder / f"{folder.name}.hdf5",
+            *sorted(folder.glob("*.h5"), key=_natural_path_sort_key),
+            *sorted(folder.glob("*.hdf5"), key=_natural_path_sort_key),
+        ]
+    )
+
+
+def _trajectory_json_candidates(folder: Path) -> list[Path]:
+    return _unique_paths(
+        [
+            folder / "ToolsTask_traj.json",
+            folder / f"{folder.name}.json",
+            *sorted(folder.glob("*.json"), key=_natural_path_sort_key),
+        ]
+    )
+
+
+def _first_existing_trajectory_pair(
+    h5_candidates: list[Path],
+    json_candidates: list[Path],
+) -> tuple[Path | None, Path | None]:
+    existing_h5 = [candidate for candidate in _unique_paths(h5_candidates) if candidate.exists()]
+    existing_json = [candidate for candidate in _unique_paths(json_candidates) if candidate.exists()]
+    if not existing_h5 or not existing_json:
+        return (
+            existing_h5[0] if existing_h5 else None,
+            existing_json[0] if existing_json else None,
+        )
+    for h5_path in existing_h5:
+        matching_json = next(
+            (json_path for json_path in existing_json if json_path.stem == h5_path.stem),
+            None,
+        )
+        if matching_json is not None:
+            return h5_path, matching_json
+    return existing_h5[0], existing_json[0]
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    seen: set[Path] = set()
+    unique: list[Path] = []
+    for path in paths:
+        if path in seen:
+            continue
+        unique.append(path)
+        seen.add(path)
+    return unique
 
 
 def _download_if_missing(
