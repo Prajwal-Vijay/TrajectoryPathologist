@@ -45,7 +45,7 @@
     "surprise_flood": {
       "aggregate_metric_name": "ecod_aggregate_score",
       "smoothing_window": 10,
-      "gamma": 0.3,
+      "gamma": 0.5,
       "max_proposals": 5
     }
   },

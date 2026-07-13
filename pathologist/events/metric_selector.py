@@ -11,6 +11,9 @@ from pathologist.schemas.common import EventProposalSource, TimeWindow
 from pathologist.schemas.key_event import KeyEventProposal
 from pathologist.schemas.metrics import MetricEvent, MetricProfile, MetricResult
 from pathologist.schemas.trajectory_bundle import CameraFrameRef, TrajectoryBundle
+import numpy as np
+from scipy.ndimage import gaussian_filter1d
+from scipy.signal import savgol_filter
 
 @dataclass(slots=True)
 class SurpriseFloodEvent:
@@ -106,7 +109,10 @@ class MetricEventSelector:
         gamma = float(self.surprise_flood_config.get("gamma", 0.5))
         max_proposals = int(self.surprise_flood_config.get("max_proposals", 0))
         gamma = min(1.0, max(0.0, gamma))
-        smoothed_scores = _centered_moving_average(raw_scores, max(1, smooth_window))
+        # smoothed_scores = _centered_moving_average(raw_scores, max(1, smooth_window))
+        # smoothed_scores = _centered_gaussian_filter(raw_scores, sigma=3)
+        smoothed_scores = _centered_savgol_filter(raw_scores, window_length=smooth_window)
+
         flood_events = _extract_surprise_flood_events(
             timestamps=timestamps,
             scores=smoothed_scores,
@@ -749,3 +755,53 @@ def _centered_moving_average(values: list[float], window: int) -> list[float]:
         window_values = values[start:end]
         smoothed.append(sum(window_values) / len(window_values))
     return smoothed
+
+def _centered_gaussian_filter(values: list[float], sigma: float) -> list[float]:
+    """
+    Smooth values using a centered, zero-phase Gaussian filter.
+    
+    Parameters:
+    - values: The 1D list of ECOD quality scores.
+    - sigma: The standard deviation of the Gaussian kernel. 
+             (Rule of thumb: window_size ≈ 6 * sigma)
+    """
+    if not values or sigma <= 0:
+        return list(values)
+    
+    # gaussian_filter1d is inherently zero-phase (centered).
+    # mode='nearest' or 'reflect' fixes the boundary volatility issue 
+    # by mirroring the data at the edges rather than shrinking the window.
+    smoothed = gaussian_filter1d(values, sigma=sigma, mode='nearest')
+    
+    return smoothed.tolist()
+
+def _centered_savgol_filter(values: list[float], window_length: int, polyorder: int = 3) -> list[float]:
+    """
+    Smooth values using a centered, zero-phase Savitzky-Golay filter.
+    
+    Parameters:
+    - values: The 1D list of ECOD quality scores.
+    - window_length: The size of the smoothing window (MUST be an odd integer).
+    - polyorder: The degree of the polynomial used to fit the data. 
+                 Typically 2 (quadratic) or 3 (cubic).
+    """
+    if not values or window_length <= 1:
+        return list(values)
+    
+    # Mathematical Constraint 1: Window length MUST be odd to be perfectly centered.
+    # If an even number is passed, we force it to the next odd integer to maintain zero phase.
+    if window_length % 2 == 0:
+        window_length += 1
+        
+    # Boundary Safety: Window cannot be larger than the dataset.
+    if window_length > len(values):
+        window_length = len(values) if len(values) % 2 != 0 else len(values) - 1
+        
+    # Mathematical Constraint 2: Polynomial order must be strictly less than the window length.
+    if polyorder >= window_length:
+        polyorder = window_length - 1
+
+    # mode='nearest' prevents the shrinking-window variance explosion at t=0 and t=T.
+    smoothed = savgol_filter(values, window_length, polyorder, mode='nearest')
+    
+    return smoothed.tolist()
