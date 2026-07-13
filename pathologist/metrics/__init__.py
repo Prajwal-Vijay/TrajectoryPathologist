@@ -17,6 +17,7 @@ from pathologist.metrics.signals import (
 )
 from pathologist.metrics.surprise import ECODSurpriseScorer, ecod_scores
 from pathologist.metrics.timing import TimestampRegularityMetric
+from pathologist.metrics.vision import VisualFlowMetric
 
 __all__ = [
     "ActionDiscontinuityMetric",
@@ -34,6 +35,7 @@ __all__ = [
     "StallingMetric",
     "TimestampRegularityMetric",
     "VelocitySpikeMetric",
+    "VisualFlowMetric",
     "default_metric_computers",
     "ecod_scores",
 ]

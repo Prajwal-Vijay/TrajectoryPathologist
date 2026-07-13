@@ -21,6 +21,7 @@ from pathologist.metrics.signals import (
 )
 from pathologist.metrics.surprise import ECODSurpriseScorer
 from pathologist.metrics.timing import TimestampRegularityMetric
+from pathologist.metrics.vision import VisualFlowMetric
 from pathologist.schemas.metrics import MetricProfile
 from pathologist.schemas.trajectory_bundle import TrajectoryBundle
 
@@ -38,6 +39,7 @@ def default_metric_computers() -> list[MetricComputer]:
         MotionSmoothnessMetric(),
         VelocitySpikeMetric(),
         StallingMetric(),
+        VisualFlowMetric(),
         GripperTransitionMetric(),
         GripperChatterMetric(),
     ]

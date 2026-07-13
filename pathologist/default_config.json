@@ -23,6 +23,11 @@
     "motion_smoothness": {},
     "velocity_spike": {},
     "stalling": {},
+    "visual_flow": {
+      "camera_names": ["head"],
+      "frame_stride": 2,
+      "resize": [128, 128]
+    },
     "gripper_transition": {
       "gripper_binary_threshold": 0.5,
       "low_state_label": "closed",
@@ -63,7 +68,8 @@
       "action_discontinuity",
       "motion_smoothness",
       "velocity_spike",
-      "stalling"
+      "stalling",
+      "visual_flow"
     ],
     "aggregate_metric_name": "ecod_aggregate_score",
     "score_tail_overrides": {

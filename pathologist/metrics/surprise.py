@@ -15,6 +15,7 @@ DEFAULT_SURPRISE_SOURCE_METRICS = [
     "motion_smoothness",
     "velocity_spike",
     "stalling",
+    "visual_flow",
 ]
 
 

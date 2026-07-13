@@ -110,8 +110,8 @@ class MetricEventSelector:
         max_proposals = int(self.surprise_flood_config.get("max_proposals", 0))
         gamma = min(1.0, max(0.0, gamma))
         # smoothed_scores = _centered_moving_average(raw_scores, max(1, smooth_window))
-        # smoothed_scores = _centered_gaussian_filter(raw_scores, sigma=3)
-        smoothed_scores = _centered_savgol_filter(raw_scores, window_length=smooth_window)
+        smoothed_scores = _centered_gaussian_filter(raw_scores, sigma=3)
+        # smoothed_scores = _centered_savgol_filter(raw_scores, window_length=smooth_window)
 
         flood_events = _extract_surprise_flood_events(
             timestamps=timestamps,

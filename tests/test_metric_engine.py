@@ -101,6 +101,7 @@ def test_metric_engine_computes_default_profile() -> None:
     assert "motion_smoothness" in metric_names
     assert "velocity_spike" in metric_names
     assert "stalling" in metric_names
+    assert "visual_flow" in metric_names
     assert "gripper_transition" in metric_names
     assert "gripper_chatter" in metric_names
     assert profile.bundle_id == "synthetic"
