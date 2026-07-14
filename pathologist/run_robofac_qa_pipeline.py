@@ -18,13 +18,17 @@ from pathologist.metrics import MetricEngine
 from pathologist.qa.robofac import (
     DEFAULT_ROBOFAC_MCQ_TYPES,
     RoboFACPrediction,
-    aggregate_predictions,
     build_qa_prompt,
     load_robofac_qa_items,
     score_failure_detection_answer,
     score_mcq_answer,
 )
-from pathologist.qa.robofac_client import OpenAIRoboFACQAClient, RoboFACQAClient, StaticRoboFACQAClient
+from pathologist.qa.robofac_client import (
+    OpenAIRoboFACQAClient,
+    OpenAIRoboFACQAError,
+    RoboFACQAClient,
+    StaticRoboFACQAClient,
+)
 from pathologist.qa.robofac_selectors import select_keyframes
 
 
@@ -55,6 +59,12 @@ def run_robofac_qa_pipeline(
     config_path: str | Path | None = None,
     qa_client: RoboFACQAClient | None = None,
     openai_model: str | None = None,
+    openai_temperature: float | None = None,
+    openai_timeout_sec: float | None = None,
+    openai_max_retries: int | None = None,
+    openai_retry_backoff_sec: float | None = None,
+    require_telemetry: bool = False,
+    fail_on_vlm_error: bool = False,
     skip_vlm: bool = False,
     download_missing: bool = False,
     hf_base_url: str | None = None,
@@ -64,6 +74,11 @@ def run_robofac_qa_pipeline(
 
     output_path = Path(output_dir).expanduser().resolve()
     output_path.mkdir(parents=True, exist_ok=True)
+    manifest_path = output_path / "robofac_manifest.json"
+    predictions_path = output_path / "robofac_predictions.jsonl"
+    stats_path = output_path / "robofac_stats.json"
+    alignment_path = output_path / "robofac_alignment_debug.json"
+    summary_path = output_path / "run_summary.json"
     resolved_question_types = question_types or list(DEFAULT_ROBOFAC_MCQ_TYPES)
     resolved_selectors = selectors or ["uniform", "kite_flow", "metric"]
     config = load_pipeline_config(config_path=config_path)
@@ -95,12 +110,24 @@ def run_robofac_qa_pipeline(
     adapter = RoboFACBundleAdapter()
     client = qa_client
     if client is None:
-        client = StaticRoboFACQAClient("") if skip_vlm else OpenAIRoboFACQAClient(model=openai_model)
+        client = (
+            StaticRoboFACQAClient("")
+            if skip_vlm
+            else OpenAIRoboFACQAClient(
+                model=openai_model,
+                temperature=openai_temperature,
+                timeout_sec=openai_timeout_sec,
+                max_retries=openai_max_retries,
+                retry_backoff_sec=openai_retry_backoff_sec,
+            )
+        )
 
-    predictions: list[RoboFACPrediction] = []
     manifest: list[dict[str, Any]] = []
     alignment_debug: list[dict[str, Any]] = []
+    running_stats: dict[str, dict[str, dict[str, float | int]]] = {}
     processed_video_count = 0
+    prediction_count = 0
+    vlm_error_count = 0
     explicit_video_path = Path(video_path).expanduser().resolve() if video_path is not None else None
     resolved_dataset_root = (
         Path(dataset_root).expanduser().resolve()
@@ -118,223 +145,373 @@ def run_robofac_qa_pipeline(
         else resolved_data_root
     )
 
-    for video_id, video_items in video_work_items:
-        if max_videos is not None and processed_video_count >= max_videos:
-            break
-        _log(
-            verbose,
-            f"[{video_id}] Resolving files for {len(video_items)} QA item(s).",
-        )
-        try:
-            candidate_video_path = _resolve_video_path(
-                video_id=video_id,
-                video_rel_path=video_items[0].video_rel_path,
-                video_root=resolved_video_root,
-                explicit_video_path=explicit_video_path,
-                download_missing=download_missing,
-                hf_base_url=hf_base_url,
-                download_dir=output_path / "downloaded_videos",
-                verbose=verbose,
+    _write_json_atomic(manifest_path, [])
+    predictions_path.write_text("", encoding="utf-8")
+    _write_json_atomic(stats_path, {})
+    _write_json_atomic(alignment_path, [])
+    initial_summary = _build_run_summary(
+        annotation_path=annotation_path,
+        annotation_paths=annotation_paths,
+        resolved_dataset_root=resolved_dataset_root,
+        resolved_data_root=resolved_data_root,
+        output_path=output_path,
+        resolved_question_types=resolved_question_types,
+        resolved_selectors=resolved_selectors,
+        frame_budget=frame_budget,
+        shuffle_videos=shuffle_videos,
+        video_sample_seed=video_sample_seed,
+        openai_model=openai_model,
+        openai_temperature=openai_temperature,
+        openai_timeout_sec=openai_timeout_sec,
+        openai_max_retries=openai_max_retries,
+        openai_retry_backoff_sec=openai_retry_backoff_sec,
+        require_telemetry=require_telemetry,
+        fail_on_vlm_error=fail_on_vlm_error,
+        qa_item_count=len(items),
+        processed_video_count=0,
+        prediction_count=0,
+        vlm_error_count=0,
+        manifest_path=manifest_path,
+        predictions_path=predictions_path,
+        stats_path=stats_path,
+        alignment_path=alignment_path,
+    )
+    _write_json_atomic(summary_path, initial_summary)
+
+    with predictions_path.open("a", encoding="utf-8") as predictions_file:
+        for video_id, video_items in video_work_items:
+            if max_videos is not None and processed_video_count >= max_videos:
+                break
+            _log(
+                verbose,
+                f"[{video_id}] Resolving files for {len(video_items)} QA item(s).",
             )
-        except RemoteFileUnavailableError as exc:
-            _log(verbose, f"[{video_id}] Skipped: video download failed ({exc}).")
-            alignment_debug.append(
-                {
-                    "video_id": video_id,
-                    "status": "skipped",
-                    "reason": "video_download_failed",
-                    "message": str(exc),
-                    "video_rel_path": video_items[0].video_rel_path,
-                }
-            )
-            continue
-        if candidate_video_path is None:
-            _log(verbose, f"[{video_id}] Skipped: video not found.")
-            alignment_debug.append(
-                {
-                    "video_id": video_id,
-                    "status": "skipped",
-                    "reason": "video_not_found",
-                    "video_rel_path": video_items[0].video_rel_path,
-                }
-            )
-            continue
-        _log(verbose, f"[{video_id}] Video: {candidate_video_path}")
-        try:
-            trajectory_files = _resolve_trajectory_files(
-                video_rel_path=video_items[0].video_rel_path,
-                explicit_h5_path=Path(h5_path).expanduser().resolve() if h5_path is not None else None,
-                explicit_traj_json_path=(
-                    Path(traj_json_path).expanduser().resolve()
-                    if traj_json_path is not None
-                    else None
-                ),
-                data_root=resolved_data_root,
-                download_missing=download_missing,
-                hf_base_url=hf_base_url,
-                download_dir=output_path / "downloaded_data",
-                verbose=verbose,
-                allow_missing=True,
-            )
-        except Exception as exc:
-            _log(verbose, f"[{video_id}] Skipped: trajectory files unavailable ({type(exc).__name__}: {exc}).")
-            alignment_debug.append(
-                {
-                    "video_id": video_id,
-                    "status": "skipped",
-                    "reason": type(exc).__name__,
-                    "message": str(exc),
-                    "video_path": str(candidate_video_path),
-                    "video_rel_path": video_items[0].video_rel_path,
-                }
-            )
-            continue
-        candidate_h5_path = None
-        candidate_traj_json_path = None
-        if trajectory_files is not None:
-            candidate_h5_path, candidate_traj_json_path = trajectory_files
-            _log(verbose, f"[{video_id}] H5: {candidate_h5_path}")
-            _log(verbose, f"[{video_id}] Trajectory JSON: {candidate_traj_json_path}")
-        else:
-            _log(verbose, f"[{video_id}] Trajectory files not found; using video-only selectors.")
-        try:
-            if candidate_h5_path is not None and candidate_traj_json_path is not None:
-                try:
-                    bundle = adapter.load(
-                        video_path=candidate_video_path,
-                        h5_path=candidate_h5_path,
-                        traj_json_path=candidate_traj_json_path,
-                        frame_cache_dir=output_path / "frame_cache" / video_id,
-                        video_id=video_id,
+            try:
+                candidate_video_path = _resolve_video_path(
+                    video_id=video_id,
+                    video_rel_path=video_items[0].video_rel_path,
+                    video_root=resolved_video_root,
+                    explicit_video_path=explicit_video_path,
+                    download_missing=download_missing,
+                    hf_base_url=hf_base_url,
+                    download_dir=output_path / "downloaded_videos",
+                    verbose=verbose,
+                )
+            except RemoteFileUnavailableError as exc:
+                _log(verbose, f"[{video_id}] Skipped: video download failed ({exc}).")
+                alignment_debug.append(
+                    {
+                        "video_id": video_id,
+                        "status": "skipped",
+                        "reason": "video_download_failed",
+                        "message": str(exc),
+                        "video_rel_path": video_items[0].video_rel_path,
+                    }
+                )
+                _persist_run_state(
+                    manifest=manifest,
+                    alignment_debug=alignment_debug,
+                    running_stats=running_stats,
+                    processed_video_count=processed_video_count,
+                    prediction_count=prediction_count,
+                    vlm_error_count=vlm_error_count,
+                    summary_path=summary_path,
+                    manifest_path=manifest_path,
+                    stats_path=stats_path,
+                    alignment_path=alignment_path,
+                    summary_base=initial_summary,
+                )
+                continue
+            if candidate_video_path is None:
+                _log(verbose, f"[{video_id}] Skipped: video not found.")
+                alignment_debug.append(
+                    {
+                        "video_id": video_id,
+                        "status": "skipped",
+                        "reason": "video_not_found",
+                        "video_rel_path": video_items[0].video_rel_path,
+                    }
+                )
+                _persist_run_state(
+                    manifest=manifest,
+                    alignment_debug=alignment_debug,
+                    running_stats=running_stats,
+                    processed_video_count=processed_video_count,
+                    prediction_count=prediction_count,
+                    vlm_error_count=vlm_error_count,
+                    summary_path=summary_path,
+                    manifest_path=manifest_path,
+                    stats_path=stats_path,
+                    alignment_path=alignment_path,
+                    summary_base=initial_summary,
+                )
+                continue
+            _log(verbose, f"[{video_id}] Video: {candidate_video_path}")
+            try:
+                trajectory_files = _resolve_trajectory_files(
+                    video_rel_path=video_items[0].video_rel_path,
+                    explicit_h5_path=Path(h5_path).expanduser().resolve() if h5_path is not None else None,
+                    explicit_traj_json_path=(
+                        Path(traj_json_path).expanduser().resolve()
+                        if traj_json_path is not None
+                        else None
+                    ),
+                    data_root=resolved_data_root,
+                    download_missing=download_missing,
+                    hf_base_url=hf_base_url,
+                    download_dir=output_path / "downloaded_data",
+                    verbose=verbose,
+                    allow_missing=True,
+                )
+            except Exception as exc:
+                _log(verbose, f"[{video_id}] Skipped: trajectory files unavailable ({type(exc).__name__}: {exc}).")
+                alignment_debug.append(
+                    {
+                        "video_id": video_id,
+                        "status": "skipped",
+                        "reason": type(exc).__name__,
+                        "message": str(exc),
+                        "video_path": str(candidate_video_path),
+                        "video_rel_path": video_items[0].video_rel_path,
+                    }
+                )
+                _persist_run_state(
+                    manifest=manifest,
+                    alignment_debug=alignment_debug,
+                    running_stats=running_stats,
+                    processed_video_count=processed_video_count,
+                    prediction_count=prediction_count,
+                    vlm_error_count=vlm_error_count,
+                    summary_path=summary_path,
+                    manifest_path=manifest_path,
+                    stats_path=stats_path,
+                    alignment_path=alignment_path,
+                    summary_base=initial_summary,
+                )
+                continue
+            candidate_h5_path = None
+            candidate_traj_json_path = None
+            if trajectory_files is not None:
+                candidate_h5_path, candidate_traj_json_path = trajectory_files
+                _log(verbose, f"[{video_id}] H5: {candidate_h5_path}")
+                _log(verbose, f"[{video_id}] Trajectory JSON: {candidate_traj_json_path}")
+            else:
+                if require_telemetry:
+                    _log(verbose, f"[{video_id}] Skipped: telemetry required but trajectory files were not found.")
+                    alignment_debug.append(
+                        {
+                            "video_id": video_id,
+                            "status": "skipped",
+                            "reason": "telemetry_required",
+                            "message": "Telemetry required but trajectory files were not found.",
+                            "video_path": str(candidate_video_path),
+                            "video_rel_path": video_items[0].video_rel_path,
+                        }
                     )
-                except ModuleNotFoundError as exc:
-                    if not _has_video_only_selector(resolved_selectors):
-                        raise
-                    _log(
-                        verbose,
-                        (
-                            f"[{video_id}] Telemetry adapter unavailable ({exc}); "
-                            "falling back to video-only selectors."
-                        ),
+                    _persist_run_state(
+                        manifest=manifest,
+                        alignment_debug=alignment_debug,
+                        running_stats=running_stats,
+                        processed_video_count=processed_video_count,
+                        prediction_count=prediction_count,
+                        vlm_error_count=vlm_error_count,
+                        summary_path=summary_path,
+                        manifest_path=manifest_path,
+                        stats_path=stats_path,
+                        alignment_path=alignment_path,
+                        summary_base=initial_summary,
                     )
+                    continue
+                _log(verbose, f"[{video_id}] Trajectory files not found; using video-only selectors.")
+            try:
+                if candidate_h5_path is not None and candidate_traj_json_path is not None:
+                    try:
+                        bundle = adapter.load(
+                            video_path=candidate_video_path,
+                            h5_path=candidate_h5_path,
+                            traj_json_path=candidate_traj_json_path,
+                            frame_cache_dir=output_path / "frame_cache" / video_id,
+                            video_id=video_id,
+                        )
+                    except ModuleNotFoundError as exc:
+                        if require_telemetry or not _has_video_only_selector(resolved_selectors):
+                            raise
+                        _log(
+                            verbose,
+                            (
+                                f"[{video_id}] Telemetry adapter unavailable ({exc}); "
+                                "falling back to video-only selectors."
+                            ),
+                        )
+                        bundle = adapter.load_video_only(
+                            video_path=candidate_video_path,
+                            frame_cache_dir=output_path / "frame_cache" / video_id,
+                            video_id=video_id,
+                            task_name=video_items[0].task,
+                        )
+                else:
                     bundle = adapter.load_video_only(
                         video_path=candidate_video_path,
                         frame_cache_dir=output_path / "frame_cache" / video_id,
                         video_id=video_id,
                         task_name=video_items[0].task,
                     )
-            else:
-                bundle = adapter.load_video_only(
-                    video_path=candidate_video_path,
-                    frame_cache_dir=output_path / "frame_cache" / video_id,
-                    video_id=video_id,
-                    task_name=video_items[0].task,
+            except Exception as exc:
+                _log(verbose, f"[{video_id}] Skipped: adapter failed ({type(exc).__name__}: {exc}).")
+                alignment_debug.append(
+                    {
+                        "video_id": video_id,
+                        "status": "skipped",
+                        "reason": type(exc).__name__,
+                        "message": str(exc),
+                        "video_path": str(candidate_video_path),
+                    }
                 )
-        except Exception as exc:
-            _log(verbose, f"[{video_id}] Skipped: adapter failed ({type(exc).__name__}: {exc}).")
-            alignment_debug.append(
-                {
-                    "video_id": video_id,
-                    "status": "skipped",
-                    "reason": type(exc).__name__,
-                    "message": str(exc),
-                    "video_path": str(candidate_video_path),
-                }
-            )
-            continue
+                _persist_run_state(
+                    manifest=manifest,
+                    alignment_debug=alignment_debug,
+                    running_stats=running_stats,
+                    processed_video_count=processed_video_count,
+                    prediction_count=prediction_count,
+                    vlm_error_count=vlm_error_count,
+                    summary_path=summary_path,
+                    manifest_path=manifest_path,
+                    stats_path=stats_path,
+                    alignment_path=alignment_path,
+                    summary_base=initial_summary,
+                )
+                continue
 
-        video_selectors = _selectors_available_for_bundle(resolved_selectors, bundle.raw_metadata)
-        if not video_selectors:
-            _log(verbose, f"[{video_id}] Skipped: no requested selector is available.")
-            alignment_debug.append(
-                {
-                    "video_id": video_id,
-                    "status": "skipped",
-                    "reason": "selectors_unavailable",
-                    "video_path": str(candidate_video_path),
-                    "requested_selectors": resolved_selectors,
-                    "video_only": bool(bundle.raw_metadata.get("video_only")),
-                }
-            )
-            continue
+            video_selectors = _selectors_available_for_bundle(resolved_selectors, bundle.raw_metadata)
+            if not video_selectors:
+                _log(verbose, f"[{video_id}] Skipped: no requested selector is available.")
+                alignment_debug.append(
+                    {
+                        "video_id": video_id,
+                        "status": "skipped",
+                        "reason": "selectors_unavailable",
+                        "video_path": str(candidate_video_path),
+                        "requested_selectors": resolved_selectors,
+                        "video_only": bool(bundle.raw_metadata.get("video_only")),
+                    }
+                )
+                _persist_run_state(
+                    manifest=manifest,
+                    alignment_debug=alignment_debug,
+                    running_stats=running_stats,
+                    processed_video_count=processed_video_count,
+                    prediction_count=prediction_count,
+                    vlm_error_count=vlm_error_count,
+                    summary_path=summary_path,
+                    manifest_path=manifest_path,
+                    stats_path=stats_path,
+                    alignment_path=alignment_path,
+                    summary_base=initial_summary,
+                )
+                continue
 
-        processed_video_count += 1
-        _log(
-            verbose,
-            (
-                f"[{video_id}] Mapped to episode {bundle.raw_metadata.get('episode_id')} "
-                f"/ {bundle.raw_metadata.get('traj_key')} | frames={bundle.raw_metadata.get('frame_count')} "
-                f"actions={bundle.raw_metadata.get('action_count')} fps={bundle.raw_metadata.get('fps')}"
-            ),
-        )
-        manifest.append(
-            {
-                "video_id": video_id,
-                "task": video_items[0].task,
-                "annotation_types": [item.question_type for item in video_items],
-                "video_path": str(candidate_video_path),
-                "h5_path": str(candidate_h5_path) if candidate_h5_path is not None else None,
-                "traj_json_path": str(candidate_traj_json_path) if candidate_traj_json_path is not None else None,
-                "video_only": bool(bundle.raw_metadata.get("video_only")),
-                "selectors": video_selectors,
-                "omitted_selectors": [
-                    selector for selector in resolved_selectors if selector not in video_selectors
-                ],
-                "matched_episode_id": bundle.raw_metadata.get("episode_id"),
-                "matched_traj_key": bundle.raw_metadata.get("traj_key"),
-                "frame_count": bundle.raw_metadata.get("frame_count"),
-                "action_count": bundle.raw_metadata.get("action_count"),
-                "state_count": bundle.raw_metadata.get("state_count"),
-                "fps": bundle.raw_metadata.get("fps"),
-                "alignment_validation_notes": bundle.raw_metadata.get("alignment_validation_notes", []),
-            }
-        )
-        metric_profile = None
-        if "metric" in video_selectors:
-            _log(verbose, f"[{video_id}] Computing metric profile for metric selector.")
-            metric_profile = MetricEngine(config=config).compute(bundle)
-        selected_frames_by_selector = {
-            selector_name: select_keyframes(
-                selector_name=selector_name,
-                bundle=bundle,
-                frame_budget=frame_budget,
-                metric_profile=metric_profile,
-                config=config,
-            )
-            for selector_name in video_selectors
-        }
-        for selector_name, selected_frames in selected_frames_by_selector.items():
+            processed_video_count += 1
             _log(
                 verbose,
                 (
-                    f"[{video_id}] Selector={selector_name} chose "
-                    f"{[frame.frame_index for frame in selected_frames]} "
-                    f"at {[round(frame.timestamp_sec, 3) for frame in selected_frames]} sec."
+                    f"[{video_id}] Mapped to episode {bundle.raw_metadata.get('episode_id')} "
+                    f"/ {bundle.raw_metadata.get('traj_key')} | frames={bundle.raw_metadata.get('frame_count')} "
+                    f"actions={bundle.raw_metadata.get('action_count')} fps={bundle.raw_metadata.get('fps')}"
                 ),
             )
-        _write_selector_debug(output_path / "selected_frames" / video_id, selected_frames_by_selector)
-        for item in video_items:
+            manifest.append(
+                {
+                    "video_id": video_id,
+                    "task": video_items[0].task,
+                    "annotation_types": [item.question_type for item in video_items],
+                    "video_path": str(candidate_video_path),
+                    "h5_path": str(candidate_h5_path) if candidate_h5_path is not None else None,
+                    "traj_json_path": str(candidate_traj_json_path) if candidate_traj_json_path is not None else None,
+                    "video_only": bool(bundle.raw_metadata.get("video_only")),
+                    "selectors": video_selectors,
+                    "omitted_selectors": [
+                        selector for selector in resolved_selectors if selector not in video_selectors
+                    ],
+                    "matched_episode_id": bundle.raw_metadata.get("episode_id"),
+                    "matched_traj_key": bundle.raw_metadata.get("traj_key"),
+                    "frame_count": bundle.raw_metadata.get("frame_count"),
+                    "action_count": bundle.raw_metadata.get("action_count"),
+                    "state_count": bundle.raw_metadata.get("state_count"),
+                    "fps": bundle.raw_metadata.get("fps"),
+                    "alignment_validation_notes": bundle.raw_metadata.get("alignment_validation_notes", []),
+                }
+            )
+            metric_profile = None
+            if "metric" in video_selectors:
+                _log(verbose, f"[{video_id}] Computing metric profile for metric selector.")
+                metric_profile = MetricEngine(config=config).compute(bundle)
+            selected_frames_by_selector = {
+                selector_name: select_keyframes(
+                    selector_name=selector_name,
+                    bundle=bundle,
+                    frame_budget=frame_budget,
+                    metric_profile=metric_profile,
+                    config=config,
+                )
+                for selector_name in video_selectors
+            }
             for selector_name, selected_frames in selected_frames_by_selector.items():
-                _log(verbose, f"[{video_id}] QA {item.question_type} with selector={selector_name}.")
-                prompt = build_qa_prompt(item, selected_frames)
-                raw_prediction = client.answer(prompt, selected_frames)
-                correct = None
-                parsed = None
-                score = None
-                if item.question_type in DEFAULT_ROBOFAC_MCQ_TYPES and raw_prediction:
-                    if item.question_type == "Failure detection":
-                        correct, parsed, score = score_failure_detection_answer(
-                            prediction=raw_prediction,
-                            reference=item.reference_answer,
+                _log(
+                    verbose,
+                    (
+                        f"[{video_id}] Selector={selector_name} chose "
+                        f"{[frame.frame_index for frame in selected_frames]} "
+                        f"at {[round(frame.timestamp_sec, 3) for frame in selected_frames]} sec."
+                    ),
+                )
+            _write_selector_debug(output_path / "selected_frames" / video_id, selected_frames_by_selector)
+            for item in video_items:
+                for selector_name, selected_frames in selected_frames_by_selector.items():
+                    _log(verbose, f"[{video_id}] QA {item.question_type} with selector={selector_name}.")
+                    prompt = build_qa_prompt(item, selected_frames)
+                    raw_prediction = ""
+                    correct = None
+                    parsed = None
+                    score = None
+                    prediction_metadata: dict[str, Any] = {
+                        "frame_budget": frame_budget,
+                        "prompt_contains_metric_values": False,
+                        "prompt_contains_bev": False,
+                        "prompt_contains_object_state": False,
+                    }
+                    try:
+                        raw_prediction = client.answer(prompt, selected_frames)
+                    except Exception as exc:
+                        if fail_on_vlm_error or not _can_continue_after_vlm_error(exc):
+                            raise
+                        vlm_error_count += 1
+                        prediction_metadata.update(
+                            {
+                                "vlm_error": str(exc),
+                                "vlm_error_type": type(exc).__name__,
+                            }
                         )
-                    else:
-                        correct, parsed, score = score_mcq_answer(
-                            prediction=raw_prediction,
-                            reference=item.reference_answer,
-                            options=item.options,
+                        _log(
+                            True,
+                            (
+                                f"[{video_id}] VLM error for selector={selector_name}, "
+                                f"question_type={item.question_type}; recorded error and continuing "
+                                f"({type(exc).__name__}: {exc})."
+                            ),
                         )
-                predictions.append(
-                    RoboFACPrediction(
+                    if item.question_type in DEFAULT_ROBOFAC_MCQ_TYPES and raw_prediction:
+                        if item.question_type == "Failure detection":
+                            correct, parsed, score = score_failure_detection_answer(
+                                prediction=raw_prediction,
+                                reference=item.reference_answer,
+                            )
+                        else:
+                            correct, parsed, score = score_mcq_answer(
+                                prediction=raw_prediction,
+                                reference=item.reference_answer,
+                                options=item.options,
+                            )
+                    prediction = RoboFACPrediction(
                         video_id=item.video_id,
                         question_type=item.question_type,
                         selector_name=selector_name,
@@ -346,53 +523,54 @@ def run_robofac_qa_pipeline(
                         score=score,
                         selected_frame_indices=[frame.frame_index for frame in selected_frames],
                         selected_timestamps_sec=[frame.timestamp_sec for frame in selected_frames],
-                        metadata={
-                            "frame_budget": frame_budget,
-                            "prompt_contains_metric_values": False,
-                            "prompt_contains_bev": False,
-                            "prompt_contains_object_state": False,
-                        },
+                        metadata=prediction_metadata,
                     )
-                )
+                    predictions_file.write(json.dumps(prediction.to_dict()) + "\n")
+                    predictions_file.flush()
+                    prediction_count += 1
+                    _update_running_stats(running_stats, prediction)
 
-    stats = aggregate_predictions(predictions)
-    manifest_path = output_path / "robofac_manifest.json"
-    predictions_path = output_path / "robofac_predictions.jsonl"
-    stats_path = output_path / "robofac_stats.json"
-    alignment_path = output_path / "robofac_alignment_debug.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    predictions_path.write_text(
-        "\n".join(json.dumps(prediction.to_dict()) for prediction in predictions),
-        encoding="utf-8",
+            _persist_run_state(
+                manifest=manifest,
+                alignment_debug=alignment_debug,
+                running_stats=running_stats,
+                processed_video_count=processed_video_count,
+                prediction_count=prediction_count,
+                vlm_error_count=vlm_error_count,
+                summary_path=summary_path,
+                manifest_path=manifest_path,
+                stats_path=stats_path,
+                alignment_path=alignment_path,
+                summary_base=initial_summary,
+            )
+            _print_live_progress(
+                video_id=video_id,
+                processed_video_count=processed_video_count,
+                max_videos=max_videos,
+                prediction_count=prediction_count,
+                vlm_error_count=vlm_error_count,
+                stats=_finalize_running_stats(running_stats),
+            )
+
+    stats = _finalize_running_stats(running_stats)
+    summary = dict(initial_summary)
+    summary.update(
+        {
+            "processed_video_count": processed_video_count,
+            "prediction_count": prediction_count,
+            "vlm_error_count": vlm_error_count,
+        }
     )
-    stats_path.write_text(json.dumps(stats, indent=2), encoding="utf-8")
-    alignment_path.write_text(json.dumps(alignment_debug, indent=2), encoding="utf-8")
-    summary = {
-        "annotation_path": str(Path(annotation_path).expanduser().resolve()),
-        "annotation_paths": [str(path) for path in annotation_paths],
-        "dataset_root": str(resolved_dataset_root) if resolved_dataset_root is not None else None,
-        "data_root": str(resolved_data_root) if resolved_data_root is not None else None,
-        "output_dir": str(output_path),
-        "question_types": resolved_question_types,
-        "selectors": resolved_selectors,
-        "frame_budget": frame_budget,
-        "shuffle_videos": shuffle_videos,
-        "video_sample_seed": video_sample_seed,
-        "qa_item_count": len(items),
-        "processed_video_count": processed_video_count,
-        "prediction_count": len(predictions),
-        "manifest_path": str(manifest_path),
-        "predictions_path": str(predictions_path),
-        "stats_path": str(stats_path),
-        "alignment_debug_path": str(alignment_path),
-    }
-    (output_path / "run_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    _write_json_atomic(manifest_path, manifest)
+    _write_json_atomic(stats_path, stats)
+    _write_json_atomic(alignment_path, alignment_debug)
+    _write_json_atomic(summary_path, summary)
     _log(
         verbose,
         (
             f"Finished RoboFAC QA run: processed_videos={processed_video_count}, "
-            f"predictions={len(predictions)}, output_dir={output_path}"
-        ),
+            f"predictions={prediction_count}, output_dir={output_path}"
+        )
     )
     return summary
 
@@ -454,6 +632,54 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--config-path", help="Optional pathologist config override.")
     parser.add_argument("--openai-model", help="OpenAI model for QA calls.")
+    parser.add_argument(
+        "--openai-temperature",
+        type=float,
+        help=(
+            "OpenAI sampling temperature for QA calls, between 0 and 2. "
+            "Use 0 or 0.2 for lower-variance evaluation."
+        ),
+    )
+    parser.add_argument(
+        "--openai-timeout-sec",
+        type=float,
+        help=(
+            "Per-request OpenAI timeout in seconds. Defaults to "
+            "OPENAI_ROBOFAC_QA_TIMEOUT_SEC or 120."
+        ),
+    )
+    parser.add_argument(
+        "--openai-max-retries",
+        type=int,
+        help=(
+            "Retries after the initial OpenAI request for timeout/rate-limit/server errors. "
+            "Defaults to OPENAI_ROBOFAC_QA_MAX_RETRIES or 2."
+        ),
+    )
+    parser.add_argument(
+        "--openai-retry-backoff-sec",
+        type=float,
+        help=(
+            "Initial retry backoff in seconds for OpenAI calls. Defaults to "
+            "OPENAI_ROBOFAC_QA_RETRY_BACKOFF_SEC or 2."
+        ),
+    )
+    parser.add_argument(
+        "--require-telemetry",
+        action="store_true",
+        help=(
+            "Skip video-only demos. Use this for apples-to-apples comparisons when any "
+            "requested selector, such as metric, requires telemetry."
+        ),
+    )
+    parser.add_argument(
+        "--fail-on-vlm-error",
+        action="store_true",
+        help=(
+            "Stop the run if a retryable VLM request still fails. By default, retryable "
+            "VLM failures are recorded in predictions and the run continues."
+        ),
+    )
     parser.add_argument("--skip-vlm", action="store_true", help="Build manifest/selected frames without VLM calls.")
     parser.add_argument("--verbose", action="store_true", help="Print progress/debug information while running.")
     parser.add_argument(
@@ -491,6 +717,12 @@ def main() -> None:
         video_sample_seed=args.video_sample_seed,
         config_path=args.config_path,
         openai_model=args.openai_model,
+        openai_temperature=args.openai_temperature,
+        openai_timeout_sec=args.openai_timeout_sec,
+        openai_max_retries=args.openai_max_retries,
+        openai_retry_backoff_sec=args.openai_retry_backoff_sec,
+        require_telemetry=args.require_telemetry,
+        fail_on_vlm_error=args.fail_on_vlm_error,
         skip_vlm=args.skip_vlm,
         download_missing=args.download_missing,
         hf_base_url=args.hf_base_url,
@@ -560,6 +792,176 @@ def _candidate_roots(root: Path | None) -> list[Path]:
 def _log(verbose: bool, message: str) -> None:
     if verbose:
         print(f"[robofac] {message}", flush=True)
+
+
+def _build_run_summary(
+    *,
+    annotation_path: str | Path,
+    annotation_paths: list[Path],
+    resolved_dataset_root: Path | None,
+    resolved_data_root: Path | None,
+    output_path: Path,
+    resolved_question_types: list[str],
+    resolved_selectors: list[str],
+    frame_budget: int,
+    shuffle_videos: bool,
+    video_sample_seed: int | None,
+    openai_model: str | None,
+    openai_temperature: float | None,
+    openai_timeout_sec: float | None,
+    openai_max_retries: int | None,
+    openai_retry_backoff_sec: float | None,
+    require_telemetry: bool,
+    fail_on_vlm_error: bool,
+    qa_item_count: int,
+    processed_video_count: int,
+    prediction_count: int,
+    vlm_error_count: int,
+    manifest_path: Path,
+    predictions_path: Path,
+    stats_path: Path,
+    alignment_path: Path,
+) -> dict[str, Any]:
+    return {
+        "annotation_path": str(Path(annotation_path).expanduser().resolve()),
+        "annotation_paths": [str(path) for path in annotation_paths],
+        "dataset_root": str(resolved_dataset_root) if resolved_dataset_root is not None else None,
+        "data_root": str(resolved_data_root) if resolved_data_root is not None else None,
+        "output_dir": str(output_path),
+        "question_types": resolved_question_types,
+        "selectors": resolved_selectors,
+        "frame_budget": frame_budget,
+        "shuffle_videos": shuffle_videos,
+        "video_sample_seed": video_sample_seed,
+        "openai_model": openai_model,
+        "openai_temperature": openai_temperature,
+        "openai_timeout_sec": openai_timeout_sec,
+        "openai_max_retries": openai_max_retries,
+        "openai_retry_backoff_sec": openai_retry_backoff_sec,
+        "require_telemetry": require_telemetry,
+        "fail_on_vlm_error": fail_on_vlm_error,
+        "qa_item_count": qa_item_count,
+        "processed_video_count": processed_video_count,
+        "prediction_count": prediction_count,
+        "vlm_error_count": vlm_error_count,
+        "manifest_path": str(manifest_path),
+        "predictions_path": str(predictions_path),
+        "stats_path": str(stats_path),
+        "alignment_debug_path": str(alignment_path),
+    }
+
+
+def _persist_run_state(
+    *,
+    manifest: list[dict[str, Any]],
+    alignment_debug: list[dict[str, Any]],
+    running_stats: dict[str, dict[str, dict[str, float | int]]],
+    processed_video_count: int,
+    prediction_count: int,
+    vlm_error_count: int,
+    summary_path: Path,
+    manifest_path: Path,
+    stats_path: Path,
+    alignment_path: Path,
+    summary_base: dict[str, Any],
+) -> None:
+    stats = _finalize_running_stats(running_stats)
+    summary = dict(summary_base)
+    summary.update(
+        {
+            "processed_video_count": processed_video_count,
+            "prediction_count": prediction_count,
+            "vlm_error_count": vlm_error_count,
+        }
+    )
+    _write_json_atomic(manifest_path, manifest)
+    _write_json_atomic(stats_path, stats)
+    _write_json_atomic(alignment_path, alignment_debug)
+    _write_json_atomic(summary_path, summary)
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def _update_running_stats(
+    running_stats: dict[str, dict[str, dict[str, float | int]]],
+    prediction: RoboFACPrediction,
+) -> None:
+    if prediction.score is None:
+        return
+    selector_bucket = running_stats.setdefault(prediction.selector_name, {})
+    type_bucket = selector_bucket.setdefault(
+        prediction.question_type,
+        {
+            "count": 0,
+            "sum": 0.0,
+        },
+    )
+    type_bucket["count"] = int(type_bucket["count"]) + 1
+    type_bucket["sum"] = float(type_bucket["sum"]) + float(prediction.score)
+
+
+def _finalize_running_stats(
+    running_stats: dict[str, dict[str, dict[str, float | int]]],
+) -> dict[str, Any]:
+    stats: dict[str, Any] = {}
+    for selector, by_type in running_stats.items():
+        stats[selector] = {}
+        overall_count = 0
+        overall_sum = 0.0
+        for question_type, bucket in by_type.items():
+            count = int(bucket["count"])
+            score_sum = float(bucket["sum"])
+            overall_count += count
+            overall_sum += score_sum
+            stats[selector][question_type] = {
+                "count": count,
+                "accuracy": score_sum / count if count else None,
+            }
+        stats[selector]["overall"] = {
+            "count": overall_count,
+            "accuracy": overall_sum / overall_count if overall_count else None,
+        }
+    return stats
+
+
+def _print_live_progress(
+    *,
+    video_id: str,
+    processed_video_count: int,
+    max_videos: int | None,
+    prediction_count: int,
+    vlm_error_count: int,
+    stats: dict[str, Any],
+) -> None:
+    target = str(max_videos) if max_videos is not None else "all"
+    selector_parts = []
+    for selector, selector_stats in stats.items():
+        overall = selector_stats.get("overall", {})
+        accuracy = overall.get("accuracy")
+        count = overall.get("count", 0)
+        if accuracy is None:
+            selector_parts.append(f"{selector}=n/a(n={count})")
+        else:
+            selector_parts.append(f"{selector}={accuracy:.3f}(n={count})")
+    metrics = " | ".join(selector_parts) if selector_parts else "no scored predictions yet"
+    print(
+        (
+            f"[robofac] progress {processed_video_count}/{target} videos "
+            f"| predictions={prediction_count} | vlm_errors={vlm_error_count} "
+            f"| last_video={video_id} | {metrics}"
+        ),
+        flush=True,
+    )
+
+
+def _can_continue_after_vlm_error(exc: Exception) -> bool:
+    if isinstance(exc, OpenAIRoboFACQAError):
+        return exc.retryable
+    return isinstance(exc, (TimeoutError, urllib.error.URLError, OSError))
 
 
 def _resolve_annotation_paths(annotation_path: str | Path) -> list[Path]:

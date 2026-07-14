@@ -25,6 +25,7 @@ class RoboFACEpisodeMatch:
     episode_id: int
     unique_id: str
     traj_key: str
+    robot_state_path: str
     elapsed_steps: int | None
     action_count: int
     state_count: int
@@ -117,6 +118,7 @@ class RoboFACBundleAdapter:
             "episode_id": episode_match.episode_id,
             "unique_id": episode_match.unique_id,
             "traj_key": episode_match.traj_key,
+            "robot_state_path": episode_match.robot_state_path,
             "frame_count": episode_match.frame_count,
             "fps": episode_match.fps,
             "action_count": episode_match.action_count,
@@ -222,7 +224,7 @@ def resolve_episode_match(
         raise ValueError(f"Could not map RoboFAC video id to episode unique_id: {video_id}")
     episode_id = int(matched_episode["episode_id"])
     traj_key = f"traj_{episode_id}"
-    action_count, state_count = _h5_episode_counts(Path(h5_path), traj_key)
+    action_count, state_count, robot_state_path = _h5_episode_counts(Path(h5_path), traj_key)
     elapsed_steps = matched_episode.get("elapsed_steps")
     elapsed_steps = int(elapsed_steps) if isinstance(elapsed_steps, (int, float)) else None
     notes = []
@@ -239,6 +241,7 @@ def resolve_episode_match(
         episode_id=episode_id,
         unique_id=str(matched_episode["unique_id"]),
         traj_key=traj_key,
+        robot_state_path=robot_state_path,
         elapsed_steps=elapsed_steps,
         action_count=action_count,
         state_count=state_count,
@@ -306,6 +309,7 @@ def _build_streams(
         "episode_id": episode_match.episode_id,
         "traj_key": episode_match.traj_key,
         "fps": episode_match.fps,
+        "robot_state_path": episode_match.robot_state_path,
         "object_and_oracle_state_excluded": True,
     }
     return [
@@ -336,11 +340,12 @@ def _build_streams(
             records=records,
             metadata={
                 **base_metadata,
-                "raw_panda_state_width": 31,
+                "raw_robot_state_width": 31,
                 "metric_proprioception_width": 7,
+                "source_robot_state_path": episode_match.robot_state_path,
                 "source_qpos_slice": [13, 20],
                 "source_gripper_qpos_slice": [20, 22],
-                "vector_representation": "panda_wristcam_qpos_13_to_19_arm_only",
+                "vector_representation": "robot_articulation_qpos_13_to_19_arm_only",
             },
         ),
         ModalityStream(
@@ -350,11 +355,12 @@ def _build_streams(
             records=records,
             metadata={
                 **base_metadata,
-                "raw_panda_state_width": 31,
+                "raw_robot_state_width": 31,
                 "metric_velocity_width": 7,
+                "source_robot_state_path": episode_match.robot_state_path,
                 "source_qvel_slice": [22, 29],
                 "source_gripper_qvel_slice": [29, 31],
-                "vector_representation": "panda_wristcam_qvel_22_to_28_arm_only",
+                "vector_representation": "robot_articulation_qvel_22_to_28_arm_only",
             },
         ),
         ModalityStream(
@@ -379,7 +385,7 @@ def _build_robot_records(actions: list[list[float]], panda_states: list[list[flo
     if sample_count <= 0:
         raise ValueError("RoboFAC trajectory contains no actions.")
     if len(panda_states) < sample_count:
-        raise ValueError("RoboFAC panda state count must be at least action count.")
+        raise ValueError("RoboFAC robot articulation state count must be at least action count.")
     records = []
     for index in range(sample_count):
         action = actions[index]
@@ -387,7 +393,9 @@ def _build_robot_records(actions: list[list[float]], panda_states: list[list[flo
         if len(action) < 8:
             raise ValueError(f"RoboFAC action at index {index} has width {len(action)}, expected at least 8.")
         if len(state) < 31:
-            raise ValueError(f"RoboFAC panda state at index {index} has width {len(state)}, expected at least 31.")
+            raise ValueError(
+                f"RoboFAC robot articulation state at index {index} has width {len(state)}, expected at least 31."
+            )
         timestamp = index / fps if fps > 0 else float(index)
         arm_action = action[:7]
         gripper_action = [action[7]]
@@ -428,16 +436,14 @@ def _read_robofac_episode(h5_path: Path, traj_key: str) -> dict[str, list[list[f
         group = handle[traj_key]
         if "actions" not in group:
             raise ValueError(f"RoboFAC {traj_key} is missing actions.")
-        panda_path = "env_states/articulations/panda_wristcam"
-        if panda_path not in group:
-            raise ValueError(f"RoboFAC {traj_key} is missing {panda_path}.")
+        robot_state_path = _robot_state_dataset_path(group)
         return {
             "actions": _dataset_to_float_rows(group["actions"]),
-            "panda_states": _dataset_to_float_rows(group[panda_path]),
+            "panda_states": _dataset_to_float_rows(group[robot_state_path]),
         }
 
 
-def _h5_episode_counts(h5_path: Path, traj_key: str) -> tuple[int, int]:
+def _h5_episode_counts(h5_path: Path, traj_key: str) -> tuple[int, int, str]:
     try:
         import h5py  # type: ignore[import-not-found]
     except ModuleNotFoundError as exc:
@@ -448,8 +454,38 @@ def _h5_episode_counts(h5_path: Path, traj_key: str) -> tuple[int, int]:
             raise ValueError(f"Could not find {traj_key} in RoboFAC HDF5 file: {h5_path}")
         group = handle[traj_key]
         action_count = int(group["actions"].shape[0])
-        state_count = int(group["env_states/articulations/panda_wristcam"].shape[0])
-        return action_count, state_count
+        robot_state_path = _robot_state_dataset_path(group)
+        state_count = int(group[robot_state_path].shape[0])
+        return action_count, state_count, robot_state_path
+
+
+def _robot_state_dataset_path(traj_group: Any) -> str:
+    articulations_path = "env_states/articulations"
+    if articulations_path not in traj_group:
+        raise ValueError(f"RoboFAC trajectory is missing {articulations_path}.")
+    articulations = traj_group[articulations_path]
+    candidates: list[tuple[int, str]] = []
+    for name, dataset in articulations.items():
+        shape = getattr(dataset, "shape", None)
+        if not shape or len(shape) != 2 or int(shape[1]) < 31:
+            continue
+        lowered = str(name).lower()
+        if lowered == "panda_wristcam":
+            priority = 0
+        elif "panda" in lowered:
+            priority = 1
+        elif "wrist" in lowered:
+            priority = 2
+        else:
+            priority = 3
+        candidates.append((priority, f"{articulations_path}/{name}"))
+    if not candidates:
+        available = ", ".join(str(name) for name in articulations.keys())
+        raise ValueError(
+            "RoboFAC trajectory has no usable robot articulation state dataset "
+            f"under {articulations_path}. Available: {available or '<none>'}"
+        )
+    return sorted(candidates, key=lambda item: (item[0], item[1]))[0][1]
 
 
 def _dataset_to_float_rows(dataset: Any) -> list[list[float]]:

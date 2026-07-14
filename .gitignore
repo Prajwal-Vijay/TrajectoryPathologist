@@ -3,3 +3,5 @@ __pycache__/
 *.py[cod]
 robofac_outputs/
 RoboFAC-dataset/
+robofac_outputs_542/
+robofac_outputs_*/

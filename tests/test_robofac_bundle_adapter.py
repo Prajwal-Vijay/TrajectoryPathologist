@@ -34,9 +34,32 @@ def test_resolve_episode_match_uses_unique_id(tmp_path: Path) -> None:
 
     assert match.episode_id == 15
     assert match.traj_key == "traj_15"
+    assert match.robot_state_path == "env_states/articulations/panda_wristcam"
     assert match.action_count == 3
     assert match.state_count == 4
     assert match.validation_notes == []
+
+
+def test_resolve_episode_match_accepts_non_wristcam_robot_articulation(tmp_path: Path) -> None:
+    h5py = pytest.importorskip("h5py")
+    h5_path = tmp_path / "traj.h5"
+    with h5py.File(h5_path, "w") as handle:
+        group = handle.create_group("traj_1")
+        group.create_dataset("actions", data=[[0.0] * 8 for _ in range(3)])
+        group.create_dataset("env_states/articulations/panda", data=[[0.0] * 31 for _ in range(4)])
+    metadata = {"episodes": [{"episode_id": 1, "unique_id": "video-uuid", "elapsed_steps": 3}]}
+
+    match = resolve_episode_match(
+        video_id="video-uuid",
+        trajectory_metadata=metadata,
+        h5_path=h5_path,
+        frame_count=3,
+        fps=30.0,
+    )
+
+    assert match.robot_state_path == "env_states/articulations/panda"
+    assert match.action_count == 3
+    assert match.state_count == 4
 
 
 def test_robofac_adapter_exposes_robot_only_streams(tmp_path: Path) -> None:
@@ -102,6 +125,7 @@ def test_robofac_adapter_exposes_robot_only_streams(tmp_path: Path) -> None:
     assert "success" not in bundle.raw_metadata
     assert "rewards" not in bundle.raw_metadata
     assert bundle.raw_metadata["oracle_fields_excluded"]
+    assert bundle.raw_metadata["robot_state_path"] == "env_states/articulations/panda_wristcam"
 
 
 def _write_test_video(cv2: object, path: Path, frame_count: int) -> None:
@@ -115,4 +139,3 @@ def _write_test_video(cv2: object, path: Path, frame_count: int) -> None:
         frame = np.full((32, 32, 3), index * 10, dtype=np.uint8)
         writer.write(frame)
     writer.release()
-
