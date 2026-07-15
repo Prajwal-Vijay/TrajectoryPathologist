@@ -19,6 +19,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="reassemble_outputs", help="Directory for evaluation outputs.")
     parser.add_argument("--top-k", type=int, default=5, help="Number of selected peaks to evaluate.")
     parser.add_argument(
+        "--selectors",
+        nargs="+",
+        default=["uniform", "kite_flow", "metric"],
+        choices=["uniform", "flow", "kite_flow", "metric"],
+        help="Selectors to compare. Defaults to all three: uniform, kite_flow, metric.",
+    )
+    parser.add_argument(
         "--segment-level",
         choices=["high", "low", "both"],
         default="both",
@@ -67,6 +74,7 @@ def main() -> None:
         include_event_camera=args.include_event_camera,
         extract_frames=False if args.no_extract_frames else None,
         max_files=args.max_files,
+        selectors=args.selectors,
         verbose=args.verbose,
     )
     print(json.dumps(summary, indent=2))
