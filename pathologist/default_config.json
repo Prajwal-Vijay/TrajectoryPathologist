@@ -62,6 +62,21 @@
       "resize_height": 128
     }
   },
+  "reassemble": {
+    "robot_downsample_hz": 50.0,
+    "camera_names": ["hand"],
+    "include_event_camera": false,
+    "extract_frames": true,
+    "segment_level": "both",
+    "top_k": 5,
+    "metrics": {
+      "visual_flow": {
+        "camera_names": ["hand"],
+        "frame_stride": 2,
+        "resize": [128, 128]
+      }
+    }
+  },
   "surprise": {
     "enabled": true,
     "source_metrics": [

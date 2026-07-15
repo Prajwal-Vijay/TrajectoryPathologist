@@ -16,6 +16,7 @@ class BundleFormat(StrEnum):
     ROBOEVAL_VLM_BUNDLE = "roboeval_vlm_bundle"
     VIFAILBACK_HDF5_VIDEO = "vifailback_hdf5_video"
     ROBOFAC_HDF5_VIDEO = "robofac_hdf5_video"
+    REASSEMBLE_HDF5 = "reassemble_hdf5"
     RLDS = "rlds"
     DROID = "droid"
     ROBOTWIN = "robotwin"
