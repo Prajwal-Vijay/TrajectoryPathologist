@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 from pathologist.qa import robofac_selectors
 from pathologist.qa.robofac_selectors import _representative_frame_for_proposal, select_kite_flow_keyframes
@@ -20,6 +21,43 @@ def test_representative_frame_for_proposal_picks_closest_to_center() -> None:
 
     assert representative is not None
     assert representative.frame_index == 100
+
+
+def test_representative_frame_for_proposal_prefers_proposal_peak_sec() -> None:
+    frames = [
+        CameraFrameRef("rgb", 9.8, Path("/tmp/0098.jpg"), frame_index=98),
+        CameraFrameRef("rgb", 10.0, Path("/tmp/0100.jpg"), frame_index=100),
+        CameraFrameRef("rgb", 10.4, Path("/tmp/0104.jpg"), frame_index=104),
+    ]
+    proposal = SimpleNamespace(metadata={"peak_sec": 10.38}, metric_events=[])
+
+    representative = _representative_frame_for_proposal(
+        frames,
+        TimeWindow(9.9, 10.3),
+        proposal=proposal,
+    )
+
+    assert representative is not None
+    assert representative.frame_index == 104
+
+
+def test_representative_frame_for_proposal_uses_metric_event_peak_sec_fallback() -> None:
+    frames = [
+        CameraFrameRef("rgb", 9.8, Path("/tmp/0098.jpg"), frame_index=98),
+        CameraFrameRef("rgb", 10.0, Path("/tmp/0100.jpg"), frame_index=100),
+        CameraFrameRef("rgb", 10.4, Path("/tmp/0104.jpg"), frame_index=104),
+    ]
+    metric_event = SimpleNamespace(value={"peak_sec": 9.82})
+    proposal = SimpleNamespace(metadata={}, metric_events=[metric_event])
+
+    representative = _representative_frame_for_proposal(
+        frames,
+        TimeWindow(9.9, 10.3),
+        proposal=proposal,
+    )
+
+    assert representative is not None
+    assert representative.frame_index == 98
 
 
 def test_kite_flow_selector_uses_stride_and_fixed_sample_nms(monkeypatch) -> None:

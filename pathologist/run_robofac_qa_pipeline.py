@@ -65,6 +65,7 @@ def run_robofac_qa_pipeline(
     openai_retry_backoff_sec: float | None = None,
     require_telemetry: bool = False,
     fail_on_vlm_error: bool = False,
+    resume: bool = False,
     skip_vlm: bool = False,
     download_missing: bool = False,
     hf_base_url: str | None = None,
@@ -79,8 +80,22 @@ def run_robofac_qa_pipeline(
     stats_path = output_path / "robofac_stats.json"
     alignment_path = output_path / "robofac_alignment_debug.json"
     summary_path = output_path / "run_summary.json"
+    existing_summary = _load_json_object(summary_path) if resume else {}
+    if resume:
+        video_sample_seed = _resolve_resume_seed(
+            requested_seed=video_sample_seed,
+            existing_summary=existing_summary,
+        )
     resolved_question_types = question_types or list(DEFAULT_ROBOFAC_MCQ_TYPES)
     resolved_selectors = selectors or ["uniform", "kite_flow", "metric"]
+    if resume:
+        _validate_resume_settings(
+            existing_summary=existing_summary,
+            resolved_question_types=resolved_question_types,
+            resolved_selectors=resolved_selectors,
+            frame_budget=frame_budget,
+            require_telemetry=require_telemetry,
+        )
     config = load_pipeline_config(config_path=config_path)
     annotation_paths = _resolve_annotation_paths(annotation_path)
     items = [
@@ -122,12 +137,38 @@ def run_robofac_qa_pipeline(
             )
         )
 
-    manifest: list[dict[str, Any]] = []
-    alignment_debug: list[dict[str, Any]] = []
+    existing_predictions: list[dict[str, Any]] = []
+    existing_prediction_keys: set[tuple[str, str, str, str, str]] = set()
+    if resume:
+        existing_predictions, manifest, alignment_debug = _load_resume_state(
+            predictions_path=predictions_path,
+            manifest_path=manifest_path,
+            alignment_path=alignment_path,
+            verbose=verbose,
+        )
+        existing_prediction_keys = {
+            key
+            for row in existing_predictions
+            if (key := _prediction_key_from_row(row)) is not None
+        }
+    else:
+        manifest = []
+        alignment_debug = []
+    manifest_by_video = {
+        str(entry.get("video_id")): entry
+        for entry in manifest
+        if isinstance(entry, dict) and entry.get("video_id")
+    }
     running_stats: dict[str, dict[str, dict[str, float | int]]] = {}
-    processed_video_count = 0
-    prediction_count = 0
-    vlm_error_count = 0
+    for row in existing_predictions:
+        _update_running_stats_from_row(running_stats, row)
+    processed_video_count = len(manifest_by_video)
+    prediction_count = len(existing_predictions)
+    vlm_error_count = sum(
+        1
+        for row in existing_predictions
+        if isinstance(row.get("metadata"), dict) and row["metadata"].get("vlm_error")
+    )
     explicit_video_path = Path(video_path).expanduser().resolve() if video_path is not None else None
     resolved_dataset_root = (
         Path(dataset_root).expanduser().resolve()
@@ -145,10 +186,11 @@ def run_robofac_qa_pipeline(
         else resolved_data_root
     )
 
-    _write_json_atomic(manifest_path, [])
-    predictions_path.write_text("", encoding="utf-8")
-    _write_json_atomic(stats_path, {})
-    _write_json_atomic(alignment_path, [])
+    if not resume:
+        _write_json_atomic(manifest_path, [])
+        predictions_path.write_text("", encoding="utf-8")
+        _write_json_atomic(stats_path, {})
+        _write_json_atomic(alignment_path, [])
     initial_summary = _build_run_summary(
         annotation_path=annotation_path,
         annotation_paths=annotation_paths,
@@ -167,10 +209,11 @@ def run_robofac_qa_pipeline(
         openai_retry_backoff_sec=openai_retry_backoff_sec,
         require_telemetry=require_telemetry,
         fail_on_vlm_error=fail_on_vlm_error,
+        resume=resume,
         qa_item_count=len(items),
-        processed_video_count=0,
-        prediction_count=0,
-        vlm_error_count=0,
+        processed_video_count=processed_video_count,
+        prediction_count=prediction_count,
+        vlm_error_count=vlm_error_count,
         manifest_path=manifest_path,
         predictions_path=predictions_path,
         stats_path=stats_path,
@@ -182,6 +225,13 @@ def run_robofac_qa_pipeline(
         for video_id, video_items in video_work_items:
             if max_videos is not None and processed_video_count >= max_videos:
                 break
+            if resume and _manifest_item_predictions_complete(
+                manifest_entry=manifest_by_video.get(video_id),
+                video_items=video_items,
+                completed_prediction_keys=existing_prediction_keys,
+            ):
+                _log(verbose, f"[{video_id}] Resume: already complete; skipping.")
+                continue
             _log(
                 verbose,
                 f"[{video_id}] Resolving files for {len(video_items)} QA item(s).",
@@ -410,7 +460,9 @@ def run_robofac_qa_pipeline(
                 )
                 continue
 
-            processed_video_count += 1
+            manifest_entry_exists = video_id in manifest_by_video
+            if not manifest_entry_exists:
+                processed_video_count += 1
             _log(
                 verbose,
                 (
@@ -419,8 +471,7 @@ def run_robofac_qa_pipeline(
                     f"actions={bundle.raw_metadata.get('action_count')} fps={bundle.raw_metadata.get('fps')}"
                 ),
             )
-            manifest.append(
-                {
+            manifest_entry = {
                     "video_id": video_id,
                     "task": video_items[0].task,
                     "annotation_types": [item.question_type for item in video_items],
@@ -440,7 +491,9 @@ def run_robofac_qa_pipeline(
                     "fps": bundle.raw_metadata.get("fps"),
                     "alignment_validation_notes": bundle.raw_metadata.get("alignment_validation_notes", []),
                 }
-            )
+            if not manifest_entry_exists:
+                manifest.append(manifest_entry)
+                manifest_by_video[video_id] = manifest_entry
             metric_profile = None
             if "metric" in video_selectors:
                 _log(verbose, f"[{video_id}] Computing metric profile for metric selector.")
@@ -467,6 +520,16 @@ def run_robofac_qa_pipeline(
             _write_selector_debug(output_path / "selected_frames" / video_id, selected_frames_by_selector)
             for item in video_items:
                 for selector_name, selected_frames in selected_frames_by_selector.items():
+                    prediction_key = _prediction_key_from_item(item, selector_name)
+                    if prediction_key in existing_prediction_keys:
+                        _log(
+                            verbose,
+                            (
+                                f"[{video_id}] Resume: QA {item.question_type} "
+                                f"with selector={selector_name} already exists; skipping."
+                            ),
+                        )
+                        continue
                     _log(verbose, f"[{video_id}] QA {item.question_type} with selector={selector_name}.")
                     prompt = build_qa_prompt(item, selected_frames)
                     raw_prediction = ""
@@ -528,6 +591,7 @@ def run_robofac_qa_pipeline(
                     predictions_file.write(json.dumps(prediction.to_dict()) + "\n")
                     predictions_file.flush()
                     prediction_count += 1
+                    existing_prediction_keys.add(prediction_key)
                     _update_running_stats(running_stats, prediction)
 
             _persist_run_state(
@@ -559,6 +623,7 @@ def run_robofac_qa_pipeline(
             "processed_video_count": processed_video_count,
             "prediction_count": prediction_count,
             "vlm_error_count": vlm_error_count,
+            "resume": resume,
         }
     )
     _write_json_atomic(manifest_path, manifest)
@@ -680,6 +745,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "VLM failures are recorded in predictions and the run continues."
         ),
     )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "Resume an interrupted run in --output-dir. Existing predictions are kept, "
+            "completed video/question/selector rows are skipped, and new rows are appended."
+        ),
+    )
     parser.add_argument("--skip-vlm", action="store_true", help="Build manifest/selected frames without VLM calls.")
     parser.add_argument("--verbose", action="store_true", help="Print progress/debug information while running.")
     parser.add_argument(
@@ -723,6 +796,7 @@ def main() -> None:
         openai_retry_backoff_sec=args.openai_retry_backoff_sec,
         require_telemetry=args.require_telemetry,
         fail_on_vlm_error=args.fail_on_vlm_error,
+        resume=args.resume,
         skip_vlm=args.skip_vlm,
         download_missing=args.download_missing,
         hf_base_url=args.hf_base_url,
@@ -794,6 +868,166 @@ def _log(verbose: bool, message: str) -> None:
         print(f"[robofac] {message}", flush=True)
 
 
+def _load_resume_state(
+    *,
+    predictions_path: Path,
+    manifest_path: Path,
+    alignment_path: Path,
+    verbose: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    predictions = _load_prediction_rows(predictions_path, verbose=verbose)
+    manifest = _load_json_list(manifest_path)
+    alignment_debug = _load_json_list(alignment_path)
+    _log(
+        verbose,
+        (
+            f"Resume loaded {len(predictions)} prediction row(s), "
+            f"{len(manifest)} manifest entrie(s), and "
+            f"{len(alignment_debug)} alignment-debug entrie(s)."
+        ),
+    )
+    return predictions, manifest, alignment_debug
+
+
+def _load_prediction_rows(path: Path, *, verbose: bool) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    malformed_lines = 0
+    with path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                row = json.loads(stripped)
+            except json.JSONDecodeError:
+                malformed_lines += 1
+                _log(verbose, f"Resume ignored malformed prediction line {line_number}: {path}")
+                continue
+            if isinstance(row, dict):
+                rows.append(row)
+    if malformed_lines:
+        _log(
+            verbose,
+            (
+                f"Resume found {malformed_lines} malformed prediction line(s); "
+                "rewriting JSONL with valid rows only."
+            ),
+        )
+        path.write_text(
+            "".join(json.dumps(row) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+    return rows
+
+
+def _load_json_list(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def _load_json_object(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+def _resolve_resume_seed(
+    *,
+    requested_seed: int | None,
+    existing_summary: dict[str, Any],
+) -> int | None:
+    existing_seed = existing_summary.get("video_sample_seed")
+    if existing_seed is None:
+        return requested_seed
+    if not isinstance(existing_seed, int):
+        raise ValueError("Cannot resume: saved run_summary video_sample_seed is not an integer.")
+    if requested_seed is None:
+        return existing_seed
+    if requested_seed != existing_seed:
+        raise ValueError(
+            "Cannot resume with a different --video-sample-seed. "
+            f"Saved seed is {existing_seed}, requested seed is {requested_seed}."
+        )
+    return requested_seed
+
+
+def _validate_resume_settings(
+    *,
+    existing_summary: dict[str, Any],
+    resolved_question_types: list[str],
+    resolved_selectors: list[str],
+    frame_budget: int,
+    require_telemetry: bool,
+) -> None:
+    if not existing_summary:
+        return
+    checks = [
+        ("question_types", resolved_question_types),
+        ("selectors", resolved_selectors),
+        ("frame_budget", frame_budget),
+        ("require_telemetry", require_telemetry),
+    ]
+    for key, requested_value in checks:
+        if key not in existing_summary:
+            continue
+        saved_value = existing_summary[key]
+        if saved_value != requested_value:
+            raise ValueError(
+                f"Cannot resume with different {key}. "
+                f"Saved value is {saved_value!r}, requested value is {requested_value!r}."
+            )
+
+
+def _manifest_item_predictions_complete(
+    *,
+    manifest_entry: dict[str, Any] | None,
+    video_items: list[Any],
+    completed_prediction_keys: set[tuple[str, str, str, str, str]],
+) -> bool:
+    if manifest_entry is None:
+        return False
+    selectors = manifest_entry.get("selectors")
+    if not isinstance(selectors, list) or not selectors:
+        return False
+    for item in video_items:
+        for selector_name in selectors:
+            if not isinstance(selector_name, str):
+                return False
+            if _prediction_key_from_item(item, selector_name) not in completed_prediction_keys:
+                return False
+    return True
+
+
+def _prediction_key_from_item(item: Any, selector_name: str) -> tuple[str, str, str, str, str]:
+    return (
+        str(item.video_id),
+        str(item.question_type),
+        str(item.question),
+        str(item.reference_answer),
+        str(selector_name),
+    )
+
+
+def _prediction_key_from_row(row: dict[str, Any]) -> tuple[str, str, str, str, str] | None:
+    required_keys = ("video_id", "question_type", "question", "reference_answer", "selector_name")
+    if any(key not in row for key in required_keys):
+        return None
+    return (
+        str(row["video_id"]),
+        str(row["question_type"]),
+        str(row["question"]),
+        str(row["reference_answer"]),
+        str(row["selector_name"]),
+    )
+
+
 def _build_run_summary(
     *,
     annotation_path: str | Path,
@@ -813,6 +1047,7 @@ def _build_run_summary(
     openai_retry_backoff_sec: float | None,
     require_telemetry: bool,
     fail_on_vlm_error: bool,
+    resume: bool,
     qa_item_count: int,
     processed_video_count: int,
     prediction_count: int,
@@ -840,6 +1075,7 @@ def _build_run_summary(
         "openai_retry_backoff_sec": openai_retry_backoff_sec,
         "require_telemetry": require_telemetry,
         "fail_on_vlm_error": fail_on_vlm_error,
+        "resume": resume,
         "qa_item_count": qa_item_count,
         "processed_video_count": processed_video_count,
         "prediction_count": prediction_count,
@@ -892,16 +1128,50 @@ def _update_running_stats(
 ) -> None:
     if prediction.score is None:
         return
-    selector_bucket = running_stats.setdefault(prediction.selector_name, {})
+    _update_running_stats_from_score(
+        running_stats,
+        selector_name=prediction.selector_name,
+        question_type=prediction.question_type,
+        score=float(prediction.score),
+    )
+
+
+def _update_running_stats_from_row(
+    running_stats: dict[str, dict[str, dict[str, float | int]]],
+    row: dict[str, Any],
+) -> None:
+    score = row.get("score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return
+    selector_name = row.get("selector_name")
+    question_type = row.get("question_type")
+    if not isinstance(selector_name, str) or not isinstance(question_type, str):
+        return
+    _update_running_stats_from_score(
+        running_stats,
+        selector_name=selector_name,
+        question_type=question_type,
+        score=float(score),
+    )
+
+
+def _update_running_stats_from_score(
+    running_stats: dict[str, dict[str, dict[str, float | int]]],
+    *,
+    selector_name: str,
+    question_type: str,
+    score: float,
+) -> None:
+    selector_bucket = running_stats.setdefault(selector_name, {})
     type_bucket = selector_bucket.setdefault(
-        prediction.question_type,
+        question_type,
         {
             "count": 0,
             "sum": 0.0,
         },
     )
     type_bucket["count"] = int(type_bucket["count"]) + 1
-    type_bucket["sum"] = float(type_bucket["sum"]) + float(prediction.score)
+    type_bucket["sum"] = float(type_bucket["sum"]) + score
 
 
 def _finalize_running_stats(

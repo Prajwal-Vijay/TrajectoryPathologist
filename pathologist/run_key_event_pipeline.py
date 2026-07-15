@@ -375,7 +375,7 @@ def _plot_ecod_aggregate_smoothed_metric(
     if not timestamps:
         return
     # smoothed_values = _centered_moving_average(values, window)
-    smoothed_values = _centered_gaussian_filter(values, sigma=3)
+    smoothed_values = _centered_gaussian_filter(values, sigma=2.5)
     # smoothed_values = _centered_savgol_filter(values, window_length=window)
 
     figure, axis = plt.subplots(figsize=(10, 4))

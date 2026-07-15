@@ -70,7 +70,11 @@ def select_metric_keyframes(
     chosen: list[CameraFrameRef] = []
     seen: set[tuple[str, int | None, float]] = set()
     for proposal in proposals:
-        frame = _representative_frame_for_proposal(proposal.candidate_frames, proposal.time_window)
+        frame = _representative_frame_for_proposal(
+            proposal.candidate_frames,
+            proposal.time_window,
+            proposal=proposal,
+        )
         if frame is None:
             continue
         key = (frame.camera_name, frame.frame_index, frame.timestamp_sec)
@@ -197,17 +201,50 @@ def _top_peaks(scores: list[float], count: int, suppression_radius: int) -> list
 def _representative_frame_for_proposal(
     frames: list[CameraFrameRef],
     time_window: Any,
+    proposal: Any | None = None,
 ) -> CameraFrameRef | None:
     if not frames:
         return None
-    center_sec = time_window.center_sec if time_window is not None else frames[len(frames) // 2].timestamp_sec
+    target_sec = _proposal_peak_sec(proposal)
+    if target_sec is None:
+        target_sec = time_window.center_sec if time_window is not None else frames[len(frames) // 2].timestamp_sec
     return min(
         frames,
         key=lambda frame: (
-            abs(frame.timestamp_sec - center_sec),
+            abs(frame.timestamp_sec - target_sec),
             frame.frame_index if frame.frame_index is not None else 10**12,
         ),
     )
+
+
+def _proposal_peak_sec(proposal: Any | None) -> float | None:
+    """Return the proposal-local maximum timestamp, if the proposal carries one."""
+
+    if proposal is None:
+        return None
+    metadata = getattr(proposal, "metadata", None)
+    if isinstance(metadata, dict):
+        peak_sec = _as_float_or_none(metadata.get("peak_sec"))
+        if peak_sec is not None:
+            return peak_sec
+    metric_events = getattr(proposal, "metric_events", None)
+    if isinstance(metric_events, list):
+        for event in metric_events:
+            value = getattr(event, "value", None)
+            if not isinstance(value, dict):
+                continue
+            peak_sec = _as_float_or_none(value.get("peak_sec"))
+            if peak_sec is not None:
+                return peak_sec
+    return None
+
+
+def _as_float_or_none(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
 
 
 def _frame_sort_key(frame: CameraFrameRef) -> tuple[float, int]:
