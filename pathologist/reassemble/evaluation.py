@@ -14,8 +14,9 @@ from pathologist.config import config_section, deep_merge, load_pipeline_config
 from pathologist.events import MetricEventSelector
 from pathologist.metrics import MetricEngine
 from pathologist.qa.robofac_selectors import select_kite_flow_keyframes, select_uniform_keyframes
+from pathologist.schemas.common import TimeWindow
 from pathologist.schemas.key_event import KeyEventProposal
-from pathologist.schemas.trajectory_bundle import CameraFrameRef, TrajectoryBundle
+from pathologist.schemas.trajectory_bundle import CameraFrameRef, ModalityStream, TrajectoryBundle
 
 
 DEFAULT_SELECTORS = ["uniform", "kite_flow", "metric"]
@@ -37,7 +38,7 @@ def run_reassemble_eval_pipeline(
     data_root: str | Path | None = None,
     output_dir: str | Path = "reassemble_outputs",
     top_k: int = 5,
-    segment_level: str = "both",
+    segment_level: str = "low",
     config_path: str | Path | None = None,
     robot_downsample_hz: float | None = None,
     camera_names: list[str] | None = None,
@@ -128,7 +129,7 @@ def run_reassemble_eval_pipeline(
     for index, current_h5_path in enumerate(h5_paths, start=1):
         _log(verbose, f"[{index}/{len(h5_paths)}] Loading {current_h5_path}")
         try:
-            bundle = adapter.load(
+            file_bundle = adapter.load(
                 current_h5_path,
                 frame_cache_dir=output_path / "frame_cache" / current_h5_path.stem,
                 robot_downsample_hz=resolved_robot_downsample_hz,
@@ -136,11 +137,28 @@ def run_reassemble_eval_pipeline(
                 include_event_camera=resolved_include_event_camera,
                 extract_frames=resolved_extract_frames,
             )
-            manifest_entry = _manifest_entry(bundle, current_h5_path)
-            if not bool(bundle.raw_metadata.get("has_failed_segment")):
-                manifest_entry.update({"included": False, "skip_reason": "no_failed_segments"})
+            demo_bundles = _failed_high_level_demo_bundles(file_bundle)
+            file_manifest_entry = _manifest_entry(file_bundle, current_h5_path)
+            file_manifest_entry.update(
+                {
+                    "evaluation_unit": "failed_high_level_action",
+                    "included_demo_count": len(demo_bundles),
+                }
+            )
+            if not demo_bundles:
+                manifest_entry = {
+                    **file_manifest_entry,
+                    "included": False,
+                    "skip_reason": "no_failed_high_level_actions_with_failed_low_level_segments",
+                }
                 manifest.append(manifest_entry)
-                alignment_debug.append(_alignment_entry(bundle, status="skipped", reason="no_failed_segments"))
+                alignment_debug.append(
+                    _alignment_entry(
+                        file_bundle,
+                        status="skipped",
+                        reason="no_failed_high_level_actions_with_failed_low_level_segments",
+                    )
+                )
                 _write_checkpoint(
                     manifest_path=manifest_path,
                     stats_path=stats_path,
@@ -157,88 +175,98 @@ def run_reassemble_eval_pipeline(
                     eval_path=eval_path,
                     status="running",
                 )
-                _log(verbose, f"[{bundle.bundle_id}] skipped: no failed segments")
+                _log(verbose, f"[{file_bundle.bundle_id}] skipped: no failed high-level demos with failed low-level segments")
                 continue
 
-            manifest_entry.update({"included": True, "skip_reason": None})
-            metric_profile = None
-            proposals: list[KeyEventProposal] = []
-            if "metric" in resolved_selectors:
-                metric_profile = MetricEngine(config=config).compute(bundle)
-                selector = _selector_from_config(config)
-                proposals = selector.select(
-                    metric_profile,
-                    trajectory_bundle=bundle,
-                    debug_timeline_path=output_path / "timeline_debug" / f"{bundle.bundle_id}.json",
+            for demo_bundle in demo_bundles:
+                manifest_entry = _manifest_entry(demo_bundle, current_h5_path)
+                manifest_entry.update(
+                    {
+                        "included": True,
+                        "skip_reason": None,
+                        "evaluation_unit": "failed_high_level_action",
+                        "source_file_bundle_id": file_bundle.bundle_id,
+                        "high_level_segment": demo_bundle.raw_metadata.get("reassemble_high_level_segment"),
+                    }
                 )
-            rows = [
-                _selector_evaluation_row(
-                    selector_name=selector_name,
-                    bundle=bundle,
-                    proposals=proposals,
+                metric_profile = None
+                proposals: list[KeyEventProposal] = []
+                if "metric" in resolved_selectors:
+                    metric_profile = MetricEngine(config=config).compute(demo_bundle)
+                    selector = _selector_from_config(config)
+                    proposals = selector.select(
+                        metric_profile,
+                        trajectory_bundle=demo_bundle,
+                        debug_timeline_path=output_path / "timeline_debug" / f"{demo_bundle.bundle_id}.json",
+                    )
+                rows = [
+                    _selector_evaluation_row(
+                        selector_name=selector_name,
+                        bundle=demo_bundle,
+                        proposals=proposals,
+                        top_k=top_k,
+                        requested_segment_level=resolved_segment_level,
+                        config=config,
+                    )
+                    for selector_name in resolved_selectors
+                ]
+                _append_eval_rows(eval_path, rows)
+                for row in rows:
+                    _update_stats(stats_accumulator, row)
+                    eval_rows.append(row)
+                selected_peak_debug_error = None
+                try:
+                    _write_selected_peak_debug(selected_peaks_dir, demo_bundle, rows)
+                except Exception as exc:
+                    selected_peak_debug_error = f"{type(exc).__name__}: {exc}"
+                manifest_entry.update(
+                    {
+                        "selectors": resolved_selectors,
+                        "metric_proposal_count": len(proposals),
+                        "selected_peak_count_by_selector": {
+                            row["selector_name"]: len(row["selected_peaks"])
+                            for row in rows
+                        },
+                        "metric_count": len(metric_profile.metrics) if metric_profile is not None else 0,
+                    }
+                )
+                if selected_peak_debug_error is not None:
+                    manifest_entry["selected_peak_debug_error"] = selected_peak_debug_error
+                manifest.append(manifest_entry)
+                alignment_debug.append(
+                    _alignment_entry(
+                        demo_bundle,
+                        status="included",
+                        metric_unavailable_reasons=(
+                            _metric_unavailable_reasons(metric_profile)
+                            if metric_profile is not None
+                            else {}
+                        ),
+                    )
+                )
+                _write_checkpoint(
+                    manifest_path=manifest_path,
+                    stats_path=stats_path,
+                    alignment_path=alignment_path,
+                    summary_path=summary_path,
+                    manifest=manifest,
+                    alignment_debug=alignment_debug,
+                    stats_accumulator=stats_accumulator,
+                    h5_paths=h5_paths,
                     top_k=top_k,
-                    requested_segment_level=resolved_segment_level,
-                    config=config,
+                    segment_level=resolved_segment_level,
+                    selectors=resolved_selectors,
+                    output_path=output_path,
+                    eval_path=eval_path,
+                    status="running",
                 )
-                for selector_name in resolved_selectors
-            ]
-            _append_eval_rows(eval_path, rows)
-            for row in rows:
-                _update_stats(stats_accumulator, row)
-                eval_rows.append(row)
-            selected_peak_debug_error = None
-            try:
-                _write_selected_peak_debug(selected_peaks_dir, bundle, rows)
-            except Exception as exc:
-                selected_peak_debug_error = f"{type(exc).__name__}: {exc}"
-            manifest_entry.update(
-                {
-                    "selectors": resolved_selectors,
-                    "metric_proposal_count": len(proposals),
-                    "selected_peak_count_by_selector": {
-                        row["selector_name"]: len(row["selected_peaks"])
-                        for row in rows
-                    },
-                    "metric_count": len(metric_profile.metrics) if metric_profile is not None else 0,
-                }
-            )
-            if selected_peak_debug_error is not None:
-                manifest_entry["selected_peak_debug_error"] = selected_peak_debug_error
-            manifest.append(manifest_entry)
-            alignment_debug.append(
-                _alignment_entry(
-                    bundle,
-                    status="included",
-                    metric_unavailable_reasons=(
-                        _metric_unavailable_reasons(metric_profile)
-                        if metric_profile is not None
-                        else {}
+                _log(
+                    verbose,
+                    (
+                        f"[{demo_bundle.bundle_id}] metric_proposals={len(proposals)} "
+                        f"selectors={resolved_selectors}"
                     ),
                 )
-            )
-            _write_checkpoint(
-                manifest_path=manifest_path,
-                stats_path=stats_path,
-                alignment_path=alignment_path,
-                summary_path=summary_path,
-                manifest=manifest,
-                alignment_debug=alignment_debug,
-                stats_accumulator=stats_accumulator,
-                h5_paths=h5_paths,
-                top_k=top_k,
-                segment_level=resolved_segment_level,
-                selectors=resolved_selectors,
-                output_path=output_path,
-                eval_path=eval_path,
-                status="running",
-            )
-            _log(
-                verbose,
-                (
-                    f"[{bundle.bundle_id}] metric_proposals={len(proposals)} "
-                    f"selectors={resolved_selectors}"
-                ),
-            )
         except Exception as exc:
             manifest.append(
                 {
@@ -306,6 +334,180 @@ def _selector_from_config(config: dict[str, Any]) -> MetricEventSelector:
         metric_packet_context_steps=int(selector_config.get("metric_packet_context_steps", 10)),
         surprise_flood_config=surprise_flood_config,
     )
+
+
+def _failed_high_level_demo_bundles(bundle: TrajectoryBundle) -> list[TrajectoryBundle]:
+    """Split a full REASSEMBLE recording into failed high-level action demos."""
+
+    segments = _segments(bundle)
+    high_segments = [
+        segment
+        for segment in segments
+        if segment.get("level") == "high"
+        and _as_float_or_none(segment.get("start_sec")) is not None
+        and _as_float_or_none(segment.get("end_sec")) is not None
+    ]
+    demo_bundles: list[TrajectoryBundle] = []
+    for high_segment in sorted(high_segments, key=lambda segment: float(segment["start_sec"])):
+        low_segments = [
+            segment
+            for segment in segments
+            if segment.get("level") == "low"
+            and str(segment.get("parent_segment_id")) == str(high_segment.get("segment_id"))
+        ]
+        failed_low_segments = [segment for segment in low_segments if not bool(segment.get("success", True))]
+        if not failed_low_segments:
+            continue
+        demo_bundles.append(_crop_bundle_to_high_level_segment(bundle, high_segment, low_segments))
+    return demo_bundles
+
+
+def _crop_bundle_to_high_level_segment(
+    bundle: TrajectoryBundle,
+    high_segment: dict[str, Any],
+    low_segments: list[dict[str, Any]],
+) -> TrajectoryBundle:
+    start_sec = float(high_segment["start_sec"])
+    end_sec = float(high_segment["end_sec"])
+    duration_sec = max(0.0, end_sec - start_sec)
+    high_segment_id = str(high_segment.get("segment_id", "unknown"))
+    safe_high_segment_id = _safe_identifier(high_segment_id)
+    bundle_id = f"{bundle.bundle_id}_high_{safe_high_segment_id}"
+    relative_high_segment = _relative_segment(high_segment, start_sec, parent_segment_id=None)
+    relative_low_segments = [
+        _relative_segment(segment, start_sec, parent_segment_id=high_segment_id)
+        for segment in low_segments
+        if _segment_overlaps_window(segment, start_sec, end_sec)
+    ]
+    failed_low_segments = [segment for segment in relative_low_segments if not bool(segment.get("success", True))]
+    raw_metadata = {
+        **bundle.raw_metadata,
+        "evaluation_unit": "failed_high_level_action",
+        "source_file_bundle_id": bundle.bundle_id,
+        "source_h5_path": str(bundle.root_path) if bundle.root_path is not None else None,
+        "high_level_segment_id": high_segment_id,
+        "high_level_segment_start_sec_in_file": start_sec,
+        "high_level_segment_end_sec_in_file": end_sec,
+        "reassemble_high_level_segment": relative_high_segment,
+        "reassemble_segments": [relative_high_segment, *relative_low_segments],
+        "high_level_segment_count": 1,
+        "low_level_segment_count": len(relative_low_segments),
+        "failed_high_level_count": 1 if not bool(high_segment.get("success", True)) else 0,
+        "failed_low_level_count": len(failed_low_segments),
+        "has_failed_segment": bool(failed_low_segments),
+        "duration_sec": duration_sec,
+    }
+    streams = [
+        cropped_stream
+        for stream in bundle.streams
+        if (cropped_stream := _crop_stream(stream, start_sec, end_sec)) is not None
+    ]
+    camera_frames = _crop_camera_frames(bundle.camera_frames, start_sec, end_sec)
+    return TrajectoryBundle(
+        bundle_id=bundle_id,
+        source_format=bundle.source_format,
+        root_path=bundle.root_path,
+        task_contract=bundle.task_contract,
+        duration_sec=duration_sec,
+        streams=streams,
+        camera_frames=camera_frames,
+        raw_metadata=raw_metadata,
+    )
+
+
+def _crop_stream(stream: ModalityStream, start_sec: float, end_sec: float) -> ModalityStream | None:
+    records = stream.records or []
+    cropped_timestamps: list[float] = []
+    cropped_records: list[dict[str, Any]] = []
+    cropped_sample_ids: list[str] = []
+    for index, timestamp in enumerate(stream.timestamps_sec):
+        timestamp = float(timestamp)
+        if timestamp < start_sec or timestamp > end_sec:
+            continue
+        shifted_timestamp = timestamp - start_sec
+        cropped_timestamps.append(shifted_timestamp)
+        if index < len(stream.sample_ids):
+            cropped_sample_ids.append(stream.sample_ids[index])
+        if index < len(records):
+            record = dict(records[index])
+            record["timestamp_sec"] = shifted_timestamp
+            record["sample_index"] = len(cropped_records)
+            cropped_records.append(record)
+    if not cropped_timestamps:
+        return None
+    metadata = {
+        **stream.metadata,
+        "cropped_from_start_sec": start_sec,
+        "cropped_from_end_sec": end_sec,
+        "source_stream_sample_count": len(stream.timestamps_sec),
+    }
+    return ModalityStream(
+        name=stream.name,
+        modality=stream.modality,
+        timestamps_sec=cropped_timestamps,
+        data_path=stream.data_path,
+        records=cropped_records if stream.records is not None else None,
+        sample_ids=cropped_sample_ids,
+        metadata=metadata,
+    )
+
+
+def _crop_camera_frames(
+    frames: list[CameraFrameRef],
+    start_sec: float,
+    end_sec: float,
+) -> list[CameraFrameRef]:
+    cropped_frames = []
+    for frame in frames:
+        timestamp = float(frame.timestamp_sec)
+        if timestamp < start_sec or timestamp > end_sec:
+            continue
+        time_window = None
+        if frame.time_window is not None:
+            time_window = TimeWindow(
+                start_sec=max(0.0, frame.time_window.start_sec - start_sec),
+                end_sec=(
+                    max(0.0, frame.time_window.end_sec - start_sec)
+                    if frame.time_window.end_sec is not None
+                    else None
+                ),
+            )
+        cropped_frames.append(
+            CameraFrameRef(
+                camera_name=frame.camera_name,
+                timestamp_sec=timestamp - start_sec,
+                image_path=frame.image_path,
+                frame_index=frame.frame_index,
+                time_window=time_window,
+            )
+        )
+    cropped_frames.sort(key=lambda frame: (frame.timestamp_sec, frame.camera_name, frame.frame_index or -1))
+    return cropped_frames
+
+
+def _relative_segment(
+    segment: dict[str, Any],
+    origin_sec: float,
+    parent_segment_id: str | None,
+) -> dict[str, Any]:
+    relative = dict(segment)
+    relative["start_sec"] = max(0.0, float(segment["start_sec"]) - origin_sec)
+    relative["end_sec"] = max(relative["start_sec"], float(segment["end_sec"]) - origin_sec)
+    if parent_segment_id is not None:
+        relative["parent_segment_id"] = parent_segment_id
+    return relative
+
+
+def _segment_overlaps_window(segment: dict[str, Any], start_sec: float, end_sec: float) -> bool:
+    segment_start = _as_float_or_none(segment.get("start_sec"))
+    segment_end = _as_float_or_none(segment.get("end_sec"))
+    if segment_start is None or segment_end is None:
+        return False
+    return segment_start <= end_sec and segment_end >= start_sec
+
+
+def _safe_identifier(value: str) -> str:
+    return "".join(character if character.isalnum() else "_" for character in value).strip("_") or "unknown"
 
 
 def _evaluation_row(
@@ -491,10 +693,14 @@ def _write_checkpoint(
     stats = _finalize_stats(stats_accumulator)
     summary = {
         "status": status,
+        "evaluation_unit": "failed_high_level_action",
         "input_count": len(h5_paths),
+        "input_file_count": len(h5_paths),
         "processed_count": len(manifest),
+        "processed_output_entry_count": len(manifest),
         "remaining_count": max(len(h5_paths) - len(manifest), 0),
         "included_count": sum(1 for entry in manifest if entry.get("included")),
+        "included_demo_count": sum(1 for entry in manifest if entry.get("included")),
         "skipped_count": sum(1 for entry in manifest if not entry.get("included")),
         "top_k": top_k,
         "segment_level": segment_level,

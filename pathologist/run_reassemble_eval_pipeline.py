@@ -28,8 +28,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--segment-level",
         choices=["high", "low", "both"],
-        default="both",
-        help="Which failure segment level to score.",
+        default="low",
+        help="Which failure segment level to score. Defaults to low-level failures inside each high-level demo.",
     )
     parser.add_argument("--config", dest="config_path", help="Optional pathologist config JSON override.")
     parser.add_argument(
