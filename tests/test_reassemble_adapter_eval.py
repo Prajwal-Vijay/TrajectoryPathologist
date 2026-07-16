@@ -99,9 +99,12 @@ def test_reassemble_recall_uses_peak_time_inside_failed_segment(tmp_path: Path) 
 
     assert row["recall_by_level"]["high"]["episode_hit_at_k"] is True
     assert row["recall_by_level"]["high"]["failed_segment_recall_at_k"] == 1.0
+    assert row["recall_by_level"]["high"]["point_precision_at_k"] == 1.0
     assert row["recall_by_level"]["low"]["episode_hit_at_k"] is True
     assert row["recall_by_level"]["low"]["failed_segment_recall_at_k"] == 1.0
+    assert row["recall_by_level"]["low"]["point_precision_at_k"] == 0.5
     assert row["recall_by_level"]["combined"]["failed_segment_recall_at_k"] == 1.0
+    assert row["recall_by_level"]["combined"]["selected_peak_hit_count"] == 2
 
 
 def test_reassemble_recall_misses_when_peak_is_outside_failed_segment(tmp_path: Path) -> None:
@@ -119,7 +122,9 @@ def test_reassemble_recall_misses_when_peak_is_outside_failed_segment(tmp_path: 
 
     assert row["recall_by_level"]["high"]["episode_hit_at_k"] is False
     assert row["recall_by_level"]["high"]["failed_segment_recall_at_k"] == 0.0
+    assert row["recall_by_level"]["high"]["point_precision_at_k"] == 0.0
     assert row["recall_by_level"]["low"]["episode_hit_at_k"] is False
+    assert row["recall_by_level"]["low"]["point_precision_at_k"] == 0.0
 
 
 def _proposal(event_id: str, peak_sec: float) -> KeyEventProposal:

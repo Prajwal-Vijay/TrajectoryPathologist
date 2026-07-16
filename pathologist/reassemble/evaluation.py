@@ -105,6 +105,8 @@ def run_reassemble_eval_pipeline(
                 "episode_hits": 0,
                 "failed_segment_count": 0,
                 "failed_segment_hits": 0,
+                "selected_peak_count": 0,
+                "selected_peak_hits": 0,
             }
         )
     )
@@ -548,6 +550,11 @@ def _evaluation_row_from_selected_peaks(
     recall_by_level = {}
     for level in levels:
         failed_segments = failed_segments_by_level[level]
+        matched_peak_secs = [
+            peak_sec
+            for peak_sec in selected_peak_times
+            if any(_segment_contains_peak(segment, peak_sec) for segment in failed_segments)
+        ]
         matched_segments = [
             {
                 **segment,
@@ -568,6 +575,14 @@ def _evaluation_row_from_selected_peaks(
                 if failed_segments
                 else None
             ),
+            "selected_peak_count": len(selected_peak_times),
+            "selected_peak_hit_count": len(matched_peak_secs),
+            "point_precision_at_k": (
+                len(matched_peak_secs) / len(selected_peak_times)
+                if selected_peak_times
+                else None
+            ),
+            "matched_peak_secs": matched_peak_secs,
             "episode_hit_at_k": bool(matched_segments) if failed_segments else None,
             "matched_failed_segments": matched_segments,
         }
@@ -638,6 +653,8 @@ def _update_stats(stats_accumulator: dict[str, dict[str, dict[str, float]]], row
         stats_accumulator[selector_name][level]["episode_hits"] += 1 if recall["episode_hit_at_k"] else 0
         stats_accumulator[selector_name][level]["failed_segment_count"] += failed_count
         stats_accumulator[selector_name][level]["failed_segment_hits"] += recall["hit_failed_segment_count"]
+        stats_accumulator[selector_name][level]["selected_peak_count"] += recall.get("selected_peak_count", 0)
+        stats_accumulator[selector_name][level]["selected_peak_hits"] += recall.get("selected_peak_hit_count", 0)
 
 
 def _finalize_stats(stats_accumulator: dict[str, dict[str, dict[str, float]]]) -> dict[str, Any]:
@@ -657,6 +674,8 @@ def _finalize_selector_stats(level_values: dict[str, dict[str, float]]) -> dict[
         episode_hits = int(values.get("episode_hits", 0))
         failed_segment_count = int(values.get("failed_segment_count", 0))
         failed_segment_hits = int(values.get("failed_segment_hits", 0))
+        selected_peak_count = int(values.get("selected_peak_count", 0))
+        selected_peak_hits = int(values.get("selected_peak_hits", 0))
         output[level] = {
             "trajectory_count": trajectory_count,
             "episode_hits": episode_hits,
@@ -666,6 +685,13 @@ def _finalize_selector_stats(level_values: dict[str, dict[str, float]]) -> dict[
             "failed_segment_recall_at_k": (
                 failed_segment_hits / failed_segment_count
                 if failed_segment_count
+                else None
+            ),
+            "selected_peak_count": selected_peak_count,
+            "selected_peak_hits": selected_peak_hits,
+            "point_precision_at_k": (
+                selected_peak_hits / selected_peak_count
+                if selected_peak_count
                 else None
             ),
         }
