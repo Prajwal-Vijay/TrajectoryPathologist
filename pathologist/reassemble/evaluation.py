@@ -99,17 +99,20 @@ def run_reassemble_eval_pipeline(
     alignment_debug: list[dict[str, Any]] = []
     eval_rows: list[dict[str, Any]] = []
     stats_accumulator: dict[str, dict[str, dict[str, float]]] = defaultdict(
-        lambda: defaultdict(
-            lambda: {
-                "trajectory_count": 0,
-                "episode_hits": 0,
-                "failed_segment_count": 0,
-                "failed_segment_hits": 0,
-                "selected_peak_count": 0,
-                "selected_peak_hits": 0,
-            }
-        )
+        lambda: defaultdict(_empty_stats_bucket)
     )
+    task_stats_accumulator: dict[str, dict[str, dict[str, float]]] = defaultdict(
+        lambda: defaultdict(_empty_stats_bucket)
+    )
+    coverage_accumulator: dict[str, Any] = {
+        "trajectory_count": 0,
+        "invalid_trajectory_count": 0,
+        "total_high_level_duration_sec": 0.0,
+        "total_failed_low_level_duration_sec": 0.0,
+        "failed_low_level_fraction_sum": 0.0,
+        "failed_low_level_fraction_min": None,
+        "failed_low_level_fraction_max": None,
+    }
 
     eval_path.write_text("", encoding="utf-8")
     _write_checkpoint(
@@ -120,6 +123,8 @@ def run_reassemble_eval_pipeline(
         manifest=manifest,
         alignment_debug=alignment_debug,
         stats_accumulator=stats_accumulator,
+        task_stats_accumulator=task_stats_accumulator,
+        coverage_accumulator=coverage_accumulator,
         h5_paths=h5_paths,
         top_k=top_k,
         segment_level=resolved_segment_level,
@@ -169,6 +174,8 @@ def run_reassemble_eval_pipeline(
                     manifest=manifest,
                     alignment_debug=alignment_debug,
                     stats_accumulator=stats_accumulator,
+                    task_stats_accumulator=task_stats_accumulator,
+                    coverage_accumulator=coverage_accumulator,
                     h5_paths=h5_paths,
                     top_k=top_k,
                     segment_level=resolved_segment_level,
@@ -181,6 +188,8 @@ def run_reassemble_eval_pipeline(
                 continue
 
             for demo_bundle in demo_bundles:
+                coverage = _failed_low_level_coverage(demo_bundle)
+                _update_failure_coverage_stats(coverage_accumulator, coverage)
                 manifest_entry = _manifest_entry(demo_bundle, current_h5_path)
                 manifest_entry.update(
                     {
@@ -189,6 +198,8 @@ def run_reassemble_eval_pipeline(
                         "evaluation_unit": "failed_high_level_action",
                         "source_file_bundle_id": file_bundle.bundle_id,
                         "high_level_segment": demo_bundle.raw_metadata.get("reassemble_high_level_segment"),
+                        "high_level_task_kind": _high_level_task_kind(demo_bundle),
+                        "failed_low_level_coverage": coverage,
                     }
                 )
                 metric_profile = None
@@ -214,7 +225,7 @@ def run_reassemble_eval_pipeline(
                 ]
                 _append_eval_rows(eval_path, rows)
                 for row in rows:
-                    _update_stats(stats_accumulator, row)
+                    _update_stats(stats_accumulator, task_stats_accumulator, row)
                     eval_rows.append(row)
                 selected_peak_debug_error = None
                 try:
@@ -254,6 +265,8 @@ def run_reassemble_eval_pipeline(
                     manifest=manifest,
                     alignment_debug=alignment_debug,
                     stats_accumulator=stats_accumulator,
+                    task_stats_accumulator=task_stats_accumulator,
+                    coverage_accumulator=coverage_accumulator,
                     h5_paths=h5_paths,
                     top_k=top_k,
                     segment_level=resolved_segment_level,
@@ -295,6 +308,8 @@ def run_reassemble_eval_pipeline(
                 manifest=manifest,
                 alignment_debug=alignment_debug,
                 stats_accumulator=stats_accumulator,
+                task_stats_accumulator=task_stats_accumulator,
+                coverage_accumulator=coverage_accumulator,
                 h5_paths=h5_paths,
                 top_k=top_k,
                 segment_level=resolved_segment_level,
@@ -313,6 +328,8 @@ def run_reassemble_eval_pipeline(
         manifest=manifest,
         alignment_debug=alignment_debug,
         stats_accumulator=stats_accumulator,
+        task_stats_accumulator=task_stats_accumulator,
+        coverage_accumulator=coverage_accumulator,
         h5_paths=h5_paths,
         top_k=top_k,
         segment_level=resolved_segment_level,
@@ -590,6 +607,8 @@ def _evaluation_row_from_selected_peaks(
         "bundle_id": bundle.bundle_id,
         "h5_path": str(bundle.root_path) if bundle.root_path is not None else None,
         "selector_name": selector_name,
+        "high_level_task_text": _high_level_task_text(bundle),
+        "high_level_task_kind": _high_level_task_kind(bundle),
         "top_k": top_k,
         "selected_peaks": selected_peaks,
         "failed_segments": failed_segments_by_level,
@@ -643,59 +662,160 @@ def _selector_evaluation_row(
     return row
 
 
-def _update_stats(stats_accumulator: dict[str, dict[str, dict[str, float]]], row: dict[str, Any]) -> None:
+def _empty_stats_bucket() -> dict[str, float]:
+    return {
+        "trajectory_count": 0,
+        "episode_hits": 0,
+        "failed_segment_count": 0,
+        "failed_segment_hits": 0,
+        "selected_peak_count": 0,
+        "selected_peak_hits": 0,
+    }
+
+
+def _update_stats(
+    stats_accumulator: dict[str, dict[str, dict[str, float]]],
+    task_stats_accumulator: dict[str, dict[str, dict[str, float]]],
+    row: dict[str, Any],
+) -> None:
     selector_name = str(row.get("selector_name", "metric"))
-    for level, recall in row["recall_by_level"].items():
-        failed_count = recall["failed_segment_count"]
-        if failed_count <= 0:
-            continue
-        stats_accumulator[selector_name][level]["trajectory_count"] += 1
-        stats_accumulator[selector_name][level]["episode_hits"] += 1 if recall["episode_hit_at_k"] else 0
-        stats_accumulator[selector_name][level]["failed_segment_count"] += failed_count
-        stats_accumulator[selector_name][level]["failed_segment_hits"] += recall["hit_failed_segment_count"]
-        stats_accumulator[selector_name][level]["selected_peak_count"] += recall.get("selected_peak_count", 0)
-        stats_accumulator[selector_name][level]["selected_peak_hits"] += recall.get("selected_peak_hit_count", 0)
+    low_recall = row["recall_by_level"].get("low")
+    if low_recall is None or low_recall["failed_segment_count"] <= 0:
+        return
+    _update_stats_bucket(stats_accumulator[selector_name]["low"], low_recall)
+    task_kind = str(row.get("high_level_task_kind") or "unknown")
+    _update_stats_bucket(task_stats_accumulator[selector_name][task_kind], low_recall)
 
 
-def _finalize_stats(stats_accumulator: dict[str, dict[str, dict[str, float]]]) -> dict[str, Any]:
+def _update_stats_bucket(bucket: dict[str, float], recall: dict[str, Any]) -> None:
+    bucket["trajectory_count"] += 1
+    bucket["episode_hits"] += 1 if recall["episode_hit_at_k"] else 0
+    bucket["failed_segment_count"] += recall["failed_segment_count"]
+    bucket["failed_segment_hits"] += recall["hit_failed_segment_count"]
+    bucket["selected_peak_count"] += recall.get("selected_peak_count", 0)
+    bucket["selected_peak_hits"] += recall.get("selected_peak_hit_count", 0)
+
+
+def _finalize_stats(
+    stats_accumulator: dict[str, dict[str, dict[str, float]]],
+    task_stats_accumulator: dict[str, dict[str, dict[str, float]]],
+) -> dict[str, Any]:
     output: dict[str, Any] = {}
+    selector_names = set(stats_accumulator) | set(task_stats_accumulator)
     for selector_name in DEFAULT_SELECTORS:
-        output[selector_name] = _finalize_selector_stats(stats_accumulator.get(selector_name, {}))
-    for selector_name in sorted(set(stats_accumulator) - set(DEFAULT_SELECTORS)):
-        output[selector_name] = _finalize_selector_stats(stats_accumulator.get(selector_name, {}))
+        output[selector_name] = _finalize_selector_stats(
+            stats_accumulator.get(selector_name, {}),
+            task_stats_accumulator.get(selector_name, {}),
+        )
+    for selector_name in sorted(selector_names - set(DEFAULT_SELECTORS)):
+        output[selector_name] = _finalize_selector_stats(
+            stats_accumulator.get(selector_name, {}),
+            task_stats_accumulator.get(selector_name, {}),
+        )
     return output
 
 
-def _finalize_selector_stats(level_values: dict[str, dict[str, float]]) -> dict[str, Any]:
-    output: dict[str, Any] = {}
-    for level in ("high", "low", "combined"):
-        values = level_values.get(level, {})
-        trajectory_count = int(values.get("trajectory_count", 0))
-        episode_hits = int(values.get("episode_hits", 0))
-        failed_segment_count = int(values.get("failed_segment_count", 0))
-        failed_segment_hits = int(values.get("failed_segment_hits", 0))
-        selected_peak_count = int(values.get("selected_peak_count", 0))
-        selected_peak_hits = int(values.get("selected_peak_hits", 0))
-        output[level] = {
-            "trajectory_count": trajectory_count,
-            "episode_hits": episode_hits,
-            "episode_recall_at_k": episode_hits / trajectory_count if trajectory_count else None,
-            "failed_segment_count": failed_segment_count,
-            "failed_segment_hits": failed_segment_hits,
-            "failed_segment_recall_at_k": (
-                failed_segment_hits / failed_segment_count
-                if failed_segment_count
-                else None
-            ),
-            "selected_peak_count": selected_peak_count,
-            "selected_peak_hits": selected_peak_hits,
-            "point_precision_at_k": (
-                selected_peak_hits / selected_peak_count
-                if selected_peak_count
-                else None
-            ),
-        }
-    return output
+def _update_failure_coverage_stats(
+    coverage_accumulator: dict[str, Any],
+    coverage: dict[str, Any],
+) -> None:
+    fraction = coverage.get("failed_low_level_coverage_fraction")
+    high_level_duration_sec = coverage.get("high_level_duration_sec")
+    failed_low_level_duration_sec = coverage.get("failed_low_level_duration_sec")
+    if fraction is None or high_level_duration_sec is None or failed_low_level_duration_sec is None:
+        coverage_accumulator["invalid_trajectory_count"] += 1
+        return
+
+    fraction = float(fraction)
+    coverage_accumulator["trajectory_count"] += 1
+    coverage_accumulator["total_high_level_duration_sec"] += float(high_level_duration_sec)
+    coverage_accumulator["total_failed_low_level_duration_sec"] += float(failed_low_level_duration_sec)
+    coverage_accumulator["failed_low_level_fraction_sum"] += fraction
+    current_min = coverage_accumulator["failed_low_level_fraction_min"]
+    current_max = coverage_accumulator["failed_low_level_fraction_max"]
+    coverage_accumulator["failed_low_level_fraction_min"] = (
+        fraction if current_min is None else min(float(current_min), fraction)
+    )
+    coverage_accumulator["failed_low_level_fraction_max"] = (
+        fraction if current_max is None else max(float(current_max), fraction)
+    )
+
+
+def _finalize_failure_coverage_stats(coverage_accumulator: dict[str, Any]) -> dict[str, Any]:
+    trajectory_count = int(coverage_accumulator.get("trajectory_count", 0))
+    total_high_level_duration_sec = float(coverage_accumulator.get("total_high_level_duration_sec", 0.0))
+    total_failed_low_level_duration_sec = float(
+        coverage_accumulator.get("total_failed_low_level_duration_sec", 0.0)
+    )
+    duration_weighted_fraction = (
+        total_failed_low_level_duration_sec / total_high_level_duration_sec
+        if total_high_level_duration_sec > 0
+        else None
+    )
+    mean_fraction = (
+        float(coverage_accumulator.get("failed_low_level_fraction_sum", 0.0)) / trajectory_count
+        if trajectory_count
+        else None
+    )
+    min_fraction = coverage_accumulator.get("failed_low_level_fraction_min")
+    max_fraction = coverage_accumulator.get("failed_low_level_fraction_max")
+    return {
+        "trajectory_count": trajectory_count,
+        "invalid_trajectory_count": int(coverage_accumulator.get("invalid_trajectory_count", 0)),
+        "total_high_level_duration_sec": total_high_level_duration_sec,
+        "total_failed_low_level_duration_sec": total_failed_low_level_duration_sec,
+        "duration_weighted_failed_low_level_fraction": duration_weighted_fraction,
+        "duration_weighted_failed_low_level_percentage": (
+            duration_weighted_fraction * 100.0 if duration_weighted_fraction is not None else None
+        ),
+        "mean_failed_low_level_fraction": mean_fraction,
+        "mean_failed_low_level_percentage": mean_fraction * 100.0 if mean_fraction is not None else None,
+        "min_failed_low_level_fraction": min_fraction,
+        "min_failed_low_level_percentage": float(min_fraction) * 100.0 if min_fraction is not None else None,
+        "max_failed_low_level_fraction": max_fraction,
+        "max_failed_low_level_percentage": float(max_fraction) * 100.0 if max_fraction is not None else None,
+    }
+
+
+def _finalize_selector_stats(
+    level_values: dict[str, dict[str, float]],
+    task_values: dict[str, dict[str, float]],
+) -> dict[str, Any]:
+    return {
+        "low": _finalize_stats_bucket(level_values.get("low", {})),
+        "by_high_level_task": {
+            task_kind: _finalize_stats_bucket(values)
+            for task_kind, values in sorted(task_values.items())
+        },
+    }
+
+
+def _finalize_stats_bucket(values: dict[str, float]) -> dict[str, Any]:
+    trajectory_count = int(values.get("trajectory_count", 0))
+    episode_hits = int(values.get("episode_hits", 0))
+    failed_segment_count = int(values.get("failed_segment_count", 0))
+    failed_segment_hits = int(values.get("failed_segment_hits", 0))
+    selected_peak_count = int(values.get("selected_peak_count", 0))
+    selected_peak_hits = int(values.get("selected_peak_hits", 0))
+    return {
+        "trajectory_count": trajectory_count,
+        "episode_hits": episode_hits,
+        "episode_recall_at_k": episode_hits / trajectory_count if trajectory_count else None,
+        "failed_segment_count": failed_segment_count,
+        "failed_segment_hits": failed_segment_hits,
+        "failed_segment_recall_at_k": (
+            failed_segment_hits / failed_segment_count
+            if failed_segment_count
+            else None
+        ),
+        "selected_peak_count": selected_peak_count,
+        "selected_peak_hits": selected_peak_hits,
+        "point_precision_at_k": (
+            selected_peak_hits / selected_peak_count
+            if selected_peak_count
+            else None
+        ),
+    }
 
 
 def _write_checkpoint(
@@ -706,6 +826,8 @@ def _write_checkpoint(
     manifest: list[dict[str, Any]],
     alignment_debug: list[dict[str, Any]],
     stats_accumulator: dict[str, dict[str, dict[str, float]]],
+    task_stats_accumulator: dict[str, dict[str, dict[str, float]]],
+    coverage_accumulator: dict[str, Any],
     h5_paths: list[Path],
     top_k: int,
     segment_level: str,
@@ -716,7 +838,10 @@ def _write_checkpoint(
 ) -> dict[str, Any]:
     """Persist current evaluation state so long runs survive interruption."""
 
-    stats = _finalize_stats(stats_accumulator)
+    stats = _finalize_stats(stats_accumulator, task_stats_accumulator)
+    stats["_dataset"] = {
+        "failed_low_level_coverage": _finalize_failure_coverage_stats(coverage_accumulator)
+    }
     summary = {
         "status": status,
         "evaluation_unit": "failed_high_level_action",
@@ -854,6 +979,85 @@ def _proposal_peak_sec(proposal: KeyEventProposal) -> float | None:
 def _segments(bundle: TrajectoryBundle) -> list[dict[str, Any]]:
     value = bundle.raw_metadata.get("reassemble_segments", [])
     return [segment for segment in value if isinstance(segment, dict)]
+
+
+def _high_level_task_text(bundle: TrajectoryBundle) -> str | None:
+    high_level_segment = bundle.raw_metadata.get("reassemble_high_level_segment")
+    if isinstance(high_level_segment, dict):
+        text = high_level_segment.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    for segment in _segments(bundle):
+        if segment.get("level") == "high":
+            text = segment.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    return None
+
+
+def _high_level_task_kind(bundle: TrajectoryBundle) -> str:
+    task_text = _high_level_task_text(bundle)
+    if task_text is None:
+        return "unknown"
+    for token in task_text.split():
+        normalized = "".join(character for character in token.lower() if character.isalpha())
+        if normalized:
+            return normalized
+    return "unknown"
+
+
+def _failed_low_level_coverage(bundle: TrajectoryBundle) -> dict[str, Any]:
+    high_level_duration_sec = _as_float_or_none(bundle.duration_sec)
+    if high_level_duration_sec is None:
+        high_level_duration_sec = _as_float_or_none(bundle.raw_metadata.get("duration_sec"))
+    failed_low_segments = [
+        segment
+        for segment in _segments(bundle)
+        if segment.get("level") == "low" and not bool(segment.get("success", True))
+    ]
+    if high_level_duration_sec is None or high_level_duration_sec <= 0:
+        return {
+            "high_level_duration_sec": high_level_duration_sec,
+            "failed_low_level_duration_sec": None,
+            "failed_low_level_segment_count": len(failed_low_segments),
+            "failed_low_level_coverage_fraction": None,
+            "failed_low_level_coverage_percentage": None,
+        }
+
+    intervals: list[tuple[float, float]] = []
+    for segment in failed_low_segments:
+        start_sec = _as_float_or_none(segment.get("start_sec"))
+        end_sec = _as_float_or_none(segment.get("end_sec"))
+        if start_sec is None or end_sec is None:
+            continue
+        start_sec = max(0.0, min(high_level_duration_sec, start_sec))
+        end_sec = max(0.0, min(high_level_duration_sec, end_sec))
+        if end_sec > start_sec:
+            intervals.append((start_sec, end_sec))
+
+    merged_intervals = _merge_intervals(intervals)
+    failed_low_level_duration_sec = sum(end_sec - start_sec for start_sec, end_sec in merged_intervals)
+    coverage_fraction = failed_low_level_duration_sec / high_level_duration_sec
+    return {
+        "high_level_duration_sec": high_level_duration_sec,
+        "failed_low_level_duration_sec": failed_low_level_duration_sec,
+        "failed_low_level_segment_count": len(failed_low_segments),
+        "failed_low_level_interval_count": len(merged_intervals),
+        "failed_low_level_coverage_fraction": coverage_fraction,
+        "failed_low_level_coverage_percentage": coverage_fraction * 100.0,
+    }
+
+
+def _merge_intervals(intervals: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    if not intervals:
+        return []
+    merged: list[tuple[float, float]] = []
+    for start_sec, end_sec in sorted(intervals):
+        if not merged or start_sec > merged[-1][1]:
+            merged.append((start_sec, end_sec))
+            continue
+        merged[-1] = (merged[-1][0], max(merged[-1][1], end_sec))
+    return merged
 
 
 def _segment_contains_peak(segment: dict[str, Any], peak_sec: float) -> bool:

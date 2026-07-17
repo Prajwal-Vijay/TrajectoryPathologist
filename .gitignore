@@ -5,3 +5,6 @@ robofac_outputs/
 RoboFAC-dataset/
 robofac_outputs_542/
 robofac_outputs_*/
+REASSEMBLE*/
+real_data/
+sim_data/

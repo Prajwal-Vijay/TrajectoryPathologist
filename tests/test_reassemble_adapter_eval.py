@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
 
 import pytest
 
 from pathologist.adapters.reassemble_bundle import ReassembleBundleAdapter
-from pathologist.reassemble.evaluation import _evaluation_row, _failed_high_level_demo_bundles
+from pathologist.reassemble.evaluation import (
+    _empty_stats_bucket,
+    _evaluation_row,
+    _failed_high_level_demo_bundles,
+    _finalize_stats,
+    _high_level_task_kind,
+    _update_stats,
+)
 from pathologist.schemas import BundleFormat, EventProposalSource, TimeWindow
 from pathologist.schemas.key_event import KeyEventProposal
 
@@ -66,6 +74,7 @@ def test_reassemble_eval_splits_failed_high_level_actions_into_demo_bundles(tmp_
     demo = demo_bundles[0]
     assert demo.duration_sec == 2.0
     assert demo.raw_metadata["evaluation_unit"] == "failed_high_level_action"
+    assert _high_level_task_kind(demo) == "remove"
     failed_low_segments = [
         segment
         for segment in demo.raw_metadata["reassemble_segments"]
@@ -125,6 +134,31 @@ def test_reassemble_recall_misses_when_peak_is_outside_failed_segment(tmp_path: 
     assert row["recall_by_level"]["high"]["point_precision_at_k"] == 0.0
     assert row["recall_by_level"]["low"]["episode_hit_at_k"] is False
     assert row["recall_by_level"]["low"]["point_precision_at_k"] == 0.0
+
+
+def test_reassemble_stats_only_report_low_level_and_task_breakdown(tmp_path: Path) -> None:
+    h5py = pytest.importorskip("h5py")
+    h5_path = tmp_path / "episode.h5"
+    _write_reassemble_fixture(h5py, h5_path, include_failure=True)
+    bundle = ReassembleBundleAdapter().load(h5_path, extract_frames=False)
+    demo = _failed_high_level_demo_bundles(bundle)[0]
+    row = _evaluation_row(
+        demo,
+        [_proposal("demo_surprise_flood_001", peak_sec=1.2)],
+        top_k=1,
+        requested_segment_level="both",
+    )
+    stats_accumulator = defaultdict(lambda: defaultdict(_empty_stats_bucket))
+    task_stats_accumulator = defaultdict(lambda: defaultdict(_empty_stats_bucket))
+
+    _update_stats(stats_accumulator, task_stats_accumulator, row)
+    stats = _finalize_stats(stats_accumulator, task_stats_accumulator)
+
+    assert set(stats["metric"]) == {"low", "by_high_level_task"}
+    assert "high" not in stats["metric"]
+    assert "combined" not in stats["metric"]
+    assert stats["metric"]["low"]["trajectory_count"] == 1
+    assert stats["metric"]["by_high_level_task"]["remove"]["trajectory_count"] == 1
 
 
 def _proposal(event_id: str, peak_sec: float) -> KeyEventProposal:
