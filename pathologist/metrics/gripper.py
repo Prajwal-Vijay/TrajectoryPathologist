@@ -8,6 +8,7 @@ from pathologist.metrics.helpers import (
     extract_vector_series,
     find_stream,
     percentile,
+    safe_dt,
     summarize,
     top_indices,
 )
@@ -22,6 +23,81 @@ from pathologist.schemas.common import (
     TimeWindow,
 )
 from pathologist.schemas.metrics import MetricEvent, MetricResult, MetricSample
+
+
+class GripperApertureSpeedMetric:
+    """Absolute speed of the aggregate gripper aperture."""
+
+    name = "gripper_aperture_speed"
+
+    def compute(self, context: MetricComputationContext) -> MetricResult:
+        stream = find_stream(
+            context.bundle,
+            [Modality.GRIPPER, Modality.PROPRIOCEPTION],
+            preferred_names=["gripper", "proprioception"],
+        )
+        timestamps, grippers = extract_vector_series(
+            stream,
+            ["gripper", "grippers", "proprioception_grippers", "gripper_state"],
+        )
+        if stream is None or len(grippers) < 2:
+            return MetricResult(
+                name=self.name,
+                description="Absolute gripper aperture speed.",
+                source_modalities=[Modality.GRIPPER],
+                metadata={
+                    "available": False,
+                    "unavailable_reason": "requires at least two gripper position samples",
+                },
+            )
+
+        vector_width = min((len(sample) for sample in grippers), default=0)
+        if vector_width <= 0:
+            return MetricResult(
+                name=self.name,
+                description="Absolute gripper aperture speed.",
+                source_modalities=[stream.modality],
+                metadata={
+                    "available": False,
+                    "unavailable_reason": "gripper position samples are empty",
+                },
+            )
+
+        apertures = [
+            sum(float(value) for value in sample[:vector_width])
+            for sample in grippers
+        ]
+        speeds = [
+            abs(apertures[index] - apertures[index - 1])
+            / safe_dt(timestamps[index - 1], timestamps[index])
+            for index in range(1, len(apertures))
+        ]
+        sample_timestamps = align_timestamps(timestamps[1:], len(speeds))
+
+        return MetricResult(
+            name=self.name,
+            description=(
+                "Absolute gripper aperture speed used as a right-tail source for "
+                "trajectory-relative ECDF surprise scoring."
+            ),
+            source_modalities=[stream.modality],
+            unit="gripper_position_units_per_second",
+            samples=[
+                MetricSample(timestamp_sec=timestamp, value=value)
+                for timestamp, value in zip(sample_timestamps, speeds)
+            ],
+            summary=summarize(speeds),
+            thresholds=[],
+            events=[],
+            display_hint="gripper_aperture_speed_timeseries",
+            metadata={
+                "available": True,
+                "stream_name": stream.name,
+                "aperture_reduction": "sum_components",
+                "component_count": vector_width,
+                "surprise_tail_interpretation": "right",
+            },
+        )
 
 
 class GripperTransitionMetric:

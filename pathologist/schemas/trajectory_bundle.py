@@ -17,9 +17,13 @@ class BundleFormat(StrEnum):
     VIFAILBACK_HDF5_VIDEO = "vifailback_hdf5_video"
     ROBOFAC_HDF5_VIDEO = "robofac_hdf5_video"
     REASSEMBLE_HDF5 = "reassemble_hdf5"
+    ROBOFAIL_SIM = "robofail_sim"
+    ROBOFAIL_REAL = "robofail_real"
     RLDS = "rlds"
     DROID = "droid"
     ROBOTWIN = "robotwin"
+    ROBOFINE_LEROBOT = "robofine_lerobot"
+    ABC130K_MCAP = "abc130k_mcap"
     CUSTOM = "custom"
 
 

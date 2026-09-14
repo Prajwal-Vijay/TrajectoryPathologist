@@ -23,10 +23,40 @@
     "motion_smoothness": {},
     "velocity_spike": {},
     "stalling": {},
+    "eef_linear_velocity_spike": {},
+    "eef_angular_velocity_spike": {},
+    "eef_translational_stalling": {},
+    "eef_rotational_stalling": {},
+    "eef_translational_jerk": {},
+    "eef_angular_jerk": {},
+    "force_norm": {},
+    "gripper_aperture_speed": {},
+    "audio_spectral_flux": {
+      "sample_rate_hz": 16000,
+      "window_ms": 25,
+      "hop_ms": 10,
+      "mel_bins": 64,
+      "min_frequency_hz": 50,
+      "max_frequency_hz": 8000
+    },
     "visual_flow": {
       "camera_names": ["head"],
       "frame_stride": 2,
-      "resize": [128, 128]
+      "resize": [128, 128],
+      "spatial_aggregation": "mean",
+      "robot_masking": {
+        "enabled": false,
+        "prompt": "robot arm. robot gripper.",
+        "dino_model_id": "IDEA-Research/grounding-dino-tiny",
+        "sam2_model_id": "facebook/sam2.1-hiera-tiny",
+        "box_threshold": 0.35,
+        "text_threshold": 0.25,
+        "mask_threshold": 0.0,
+        "dilation_px": 8,
+        "duplicate_iou_threshold": 0.8,
+        "chunk_size_frames": 20,
+        "device": "auto"
+      }
     },
     "gripper_transition": {
       "gripper_binary_threshold": 0.5,
@@ -51,6 +81,7 @@
       "aggregate_metric_name": "ecod_aggregate_score",
       "smoothing_window": 10,
       "gamma": 0.5,
+      "ranking": "area",
       "max_proposals": 5
     }
   },
@@ -64,16 +95,17 @@
   },
   "reassemble": {
     "robot_downsample_hz": 50.0,
-    "camera_names": ["hand"],
+    "camera_names": ["hama1", "hama2", "hand"],
     "include_event_camera": false,
     "extract_frames": true,
     "segment_level": "both",
     "top_k": 5,
     "metrics": {
       "visual_flow": {
-        "camera_names": ["hand"],
+        "camera_names": ["hama1", "hama2", "hand"],
         "frame_stride": 2,
-        "resize": [128, 128]
+        "resize": [128, 128],
+        "spatial_aggregation": "mean"
       }
     }
   },
@@ -84,11 +116,21 @@
       "motion_smoothness",
       "velocity_spike",
       "stalling",
-      "visual_flow"
+      "eef_linear_velocity_spike",
+      "eef_angular_velocity_spike",
+      "eef_translational_stalling",
+      "eef_rotational_stalling",
+      "eef_translational_jerk",
+      "eef_angular_jerk",
+      "gripper_aperture_speed",
+      "visual_flow",
+      "audio_spectral_flux"
     ],
     "aggregate_metric_name": "ecod_aggregate_score",
     "score_tail_overrides": {
-      "stalling": "left"
+      "stalling": "left",
+      "eef_translational_stalling": "left",
+      "eef_rotational_stalling": "left"
     },
     "skewness_sign_overrides": {
       "stalling": -1

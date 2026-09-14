@@ -14,7 +14,7 @@ from pathologist.config import config_section, deep_merge, load_pipeline_config
 from pathologist.events import MetricEventSelector
 from pathologist.metrics import MetricEngine
 from pathologist.qa.robofac_selectors import select_kite_flow_keyframes, select_uniform_keyframes
-from pathologist.schemas.common import TimeWindow
+from pathologist.schemas.common import Modality, TimeWindow
 from pathologist.schemas.key_event import KeyEventProposal
 from pathologist.schemas.trajectory_bundle import CameraFrameRef, ModalityStream, TrajectoryBundle
 
@@ -25,9 +25,10 @@ DEFAULT_SELECTORS = ["uniform", "kite_flow", "metric"]
 REASSEMBLE_CONFIG_OVERRIDE = {
     "metrics": {
         "visual_flow": {
-            "camera_names": ["hand"],
+            "camera_names": ["hama1", "hama2", "hand"],
             "frame_stride": 2,
             "resize": [128, 128],
+            "spatial_aggregation": "mean",
         }
     }
 }
@@ -44,8 +45,18 @@ def run_reassemble_eval_pipeline(
     camera_names: list[str] | None = None,
     include_event_camera: bool | None = None,
     extract_frames: bool | None = None,
+    frame_cache_dir: str | Path | None = None,
     max_files: int | None = None,
     selectors: list[str] | None = None,
+    metric_ranking: str | None = None,
+    evaluation_unit: str = "failed_high_level_action",
+    max_demos: int | None = None,
+    min_demo_duration_sec: float | None = None,
+    max_demo_duration_sec: float | None = None,
+    target_demo_bundle_ids: list[str] | set[str] | None = None,
+    frame_time_windows_by_h5_path: dict[str, list[tuple[float, float]]] | None = None,
+    plot_ecod_aggregates: bool = False,
+    resume: bool = False,
     verbose: bool = False,
 ) -> dict[str, Any]:
     """Run deterministic recall@K evaluation on REASSEMBLE HDF5 files."""
@@ -59,6 +70,24 @@ def run_reassemble_eval_pipeline(
     resolved_segment_level = segment_level.lower()
     if resolved_segment_level not in {"high", "low", "both"}:
         raise ValueError("--segment-level must be one of: high, low, both")
+    resolved_evaluation_unit = _resolve_evaluation_unit(evaluation_unit)
+    if max_demos is not None and max_demos <= 0:
+        raise ValueError("max_demos must be positive when provided.")
+    if min_demo_duration_sec is not None and min_demo_duration_sec < 0:
+        raise ValueError("min_demo_duration_sec must be non-negative when provided.")
+    if max_demo_duration_sec is not None and max_demo_duration_sec < 0:
+        raise ValueError("max_demo_duration_sec must be non-negative when provided.")
+    if (
+        min_demo_duration_sec is not None
+        and max_demo_duration_sec is not None
+        and min_demo_duration_sec > max_demo_duration_sec
+    ):
+        raise ValueError("min_demo_duration_sec cannot be greater than max_demo_duration_sec.")
+    target_demo_bundle_id_set = (
+        {str(bundle_id) for bundle_id in target_demo_bundle_ids}
+        if target_demo_bundle_ids is not None
+        else None
+    )
     resolved_selectors = _resolve_selectors(selectors)
 
     output_path = Path(output_dir).expanduser().resolve()
@@ -70,8 +99,18 @@ def run_reassemble_eval_pipeline(
     summary_path = output_path / "run_summary.json"
     selected_peaks_dir = output_path / "selected_peaks"
     selected_peaks_dir.mkdir(parents=True, exist_ok=True)
+    resolved_frame_cache_dir = (
+        Path(frame_cache_dir).expanduser().resolve()
+        if frame_cache_dir is not None
+        else output_path / "frame_cache"
+    )
+    resolved_frame_cache_dir.mkdir(parents=True, exist_ok=True)
 
     config = deep_merge(load_pipeline_config(config_path=config_path), REASSEMBLE_CONFIG_OVERRIDE)
+    resolved_metric_ranking = _resolve_metric_ranking(
+        metric_ranking if metric_ranking is not None else _configured_metric_ranking(config)
+    )
+    _set_metric_ranking(config, resolved_metric_ranking)
     reassemble_config = config_section(config, "reassemble")
     resolved_robot_downsample_hz = (
         float(robot_downsample_hz)
@@ -89,6 +128,7 @@ def run_reassemble_eval_pipeline(
         if extract_frames is not None
         else bool(reassemble_config.get("extract_frames", True))
     )
+    _set_visual_flow_camera_names(config, resolved_camera_names)
 
     h5_paths = _resolve_h5_paths(h5_path=h5_path, data_root=data_root)
     if max_files is not None:
@@ -113,8 +153,38 @@ def run_reassemble_eval_pipeline(
         "failed_low_level_fraction_min": None,
         "failed_low_level_fraction_max": None,
     }
+    completed_demo_bundle_ids: set[str] = set()
+    completed_skipped_h5_paths: set[str] = set()
 
-    eval_path.write_text("", encoding="utf-8")
+    if resume:
+        resume_state = _load_resume_state(
+            manifest_path=manifest_path,
+            eval_path=eval_path,
+            alignment_path=alignment_path,
+            selectors=resolved_selectors,
+        )
+        manifest = resume_state["manifest"]
+        alignment_debug = resume_state["alignment_debug"]
+        eval_rows = resume_state["eval_rows"]
+        completed_demo_bundle_ids = resume_state["completed_demo_bundle_ids"]
+        completed_skipped_h5_paths = resume_state["completed_skipped_h5_paths"]
+        if resume_state["rewrite_eval_rows"]:
+            _write_eval_rows_atomic(eval_path, eval_rows)
+        for row in eval_rows:
+            _update_stats(stats_accumulator, task_stats_accumulator, row)
+        for entry in manifest:
+            coverage = entry.get("failed_low_level_coverage")
+            if entry.get("included") is True and isinstance(coverage, dict):
+                _update_failure_coverage_stats(coverage_accumulator, coverage)
+        _log(
+            verbose,
+            (
+                f"resuming with {len(completed_demo_bundle_ids)} completed demo bundle(s) "
+                f"and {len(completed_skipped_h5_paths)} completed skipped file(s)"
+            ),
+        )
+    else:
+        eval_path.write_text("", encoding="utf-8")
     _write_checkpoint(
         manifest_path=manifest_path,
         stats_path=stats_path,
@@ -129,41 +199,73 @@ def run_reassemble_eval_pipeline(
         top_k=top_k,
         segment_level=resolved_segment_level,
         selectors=resolved_selectors,
+        metric_ranking=resolved_metric_ranking,
+        frame_cache_dir=resolved_frame_cache_dir,
+        plot_ecod_aggregates=plot_ecod_aggregates,
         output_path=output_path,
         eval_path=eval_path,
         status="running",
+        evaluation_unit=resolved_evaluation_unit,
+        max_demos=max_demos,
+        min_demo_duration_sec=min_demo_duration_sec,
+        max_demo_duration_sec=max_demo_duration_sec,
+        target_demo_bundle_ids=target_demo_bundle_id_set,
     )
+    included_demo_count = len(completed_demo_bundle_ids)
     for index, current_h5_path in enumerate(h5_paths, start=1):
+        if max_demos is not None and included_demo_count >= max_demos:
+            _log(verbose, f"Reached max_demos={max_demos}; stopping.")
+            break
+        resolved_h5_string = str(current_h5_path)
+        if resolved_h5_string in completed_skipped_h5_paths:
+            _log(verbose, f"[{index}/{len(h5_paths)}] Skipping completed file {current_h5_path}")
+            continue
         _log(verbose, f"[{index}/{len(h5_paths)}] Loading {current_h5_path}")
         try:
+            frame_time_windows = None
+            if frame_time_windows_by_h5_path is not None:
+                frame_time_windows = frame_time_windows_by_h5_path.get(
+                    str(current_h5_path.expanduser().resolve())
+                )
             file_bundle = adapter.load(
                 current_h5_path,
-                frame_cache_dir=output_path / "frame_cache" / current_h5_path.stem,
+                frame_cache_dir=resolved_frame_cache_dir / current_h5_path.stem,
                 robot_downsample_hz=resolved_robot_downsample_hz,
                 camera_names=resolved_camera_names,
                 include_event_camera=resolved_include_event_camera,
                 extract_frames=resolved_extract_frames,
+                frame_time_windows=frame_time_windows,
             )
-            demo_bundles = _failed_high_level_demo_bundles(file_bundle)
+            demo_bundles = _high_level_demo_bundles_for_evaluation(
+                file_bundle,
+                evaluation_unit=resolved_evaluation_unit,
+            )
+            demo_bundles = _filter_demo_bundles(
+                demo_bundles,
+                min_demo_duration_sec=min_demo_duration_sec,
+                max_demo_duration_sec=max_demo_duration_sec,
+                target_demo_bundle_ids=target_demo_bundle_id_set,
+            )
             file_manifest_entry = _manifest_entry(file_bundle, current_h5_path)
             file_manifest_entry.update(
                 {
-                    "evaluation_unit": "failed_high_level_action",
+                    "evaluation_unit": resolved_evaluation_unit,
                     "included_demo_count": len(demo_bundles),
+                    "metric_ranking": resolved_metric_ranking,
                 }
             )
             if not demo_bundles:
                 manifest_entry = {
                     **file_manifest_entry,
                     "included": False,
-                    "skip_reason": "no_failed_high_level_actions_with_failed_low_level_segments",
+                    "skip_reason": _no_demo_skip_reason(resolved_evaluation_unit),
                 }
                 manifest.append(manifest_entry)
                 alignment_debug.append(
                     _alignment_entry(
                         file_bundle,
                         status="skipped",
-                        reason="no_failed_high_level_actions_with_failed_low_level_segments",
+                        reason=_no_demo_skip_reason(resolved_evaluation_unit),
                     )
                 )
                 _write_checkpoint(
@@ -180,14 +282,27 @@ def run_reassemble_eval_pipeline(
                     top_k=top_k,
                     segment_level=resolved_segment_level,
                     selectors=resolved_selectors,
+                    metric_ranking=resolved_metric_ranking,
+                    frame_cache_dir=resolved_frame_cache_dir,
+                    plot_ecod_aggregates=plot_ecod_aggregates,
                     output_path=output_path,
                     eval_path=eval_path,
                     status="running",
+                    evaluation_unit=resolved_evaluation_unit,
+                    max_demos=max_demos,
+                    min_demo_duration_sec=min_demo_duration_sec,
+                    max_demo_duration_sec=max_demo_duration_sec,
+                    target_demo_bundle_ids=target_demo_bundle_id_set,
                 )
-                _log(verbose, f"[{file_bundle.bundle_id}] skipped: no failed high-level demos with failed low-level segments")
+                _log(verbose, f"[{file_bundle.bundle_id}] skipped: {_no_demo_skip_reason(resolved_evaluation_unit)}")
                 continue
 
             for demo_bundle in demo_bundles:
+                if max_demos is not None and included_demo_count >= max_demos:
+                    break
+                if demo_bundle.bundle_id in completed_demo_bundle_ids:
+                    _log(verbose, f"[{demo_bundle.bundle_id}] resume skip: already complete")
+                    continue
                 coverage = _failed_low_level_coverage(demo_bundle)
                 _update_failure_coverage_stats(coverage_accumulator, coverage)
                 manifest_entry = _manifest_entry(demo_bundle, current_h5_path)
@@ -195,11 +310,18 @@ def run_reassemble_eval_pipeline(
                     {
                         "included": True,
                         "skip_reason": None,
-                        "evaluation_unit": "failed_high_level_action",
+                        "evaluation_unit": resolved_evaluation_unit,
                         "source_file_bundle_id": file_bundle.bundle_id,
                         "high_level_segment": demo_bundle.raw_metadata.get("reassemble_high_level_segment"),
+                        "high_level_segment_start_sec_in_file": demo_bundle.raw_metadata.get(
+                            "high_level_segment_start_sec_in_file"
+                        ),
+                        "high_level_segment_end_sec_in_file": demo_bundle.raw_metadata.get(
+                            "high_level_segment_end_sec_in_file"
+                        ),
                         "high_level_task_kind": _high_level_task_kind(demo_bundle),
                         "failed_low_level_coverage": coverage,
+                        "metric_ranking": resolved_metric_ranking,
                     }
                 )
                 metric_profile = None
@@ -211,6 +333,11 @@ def run_reassemble_eval_pipeline(
                         metric_profile,
                         trajectory_bundle=demo_bundle,
                         debug_timeline_path=output_path / "timeline_debug" / f"{demo_bundle.bundle_id}.json",
+                        ecod_aggregate_path=(
+                            output_path / "ecod_aggregates" / demo_bundle.bundle_id
+                            if plot_ecod_aggregates
+                            else None
+                        ),
                     )
                 rows = [
                     _selector_evaluation_row(
@@ -271,10 +398,19 @@ def run_reassemble_eval_pipeline(
                     top_k=top_k,
                     segment_level=resolved_segment_level,
                     selectors=resolved_selectors,
+                    metric_ranking=resolved_metric_ranking,
+                    frame_cache_dir=resolved_frame_cache_dir,
+                    plot_ecod_aggregates=plot_ecod_aggregates,
                     output_path=output_path,
                     eval_path=eval_path,
                     status="running",
+                    evaluation_unit=resolved_evaluation_unit,
+                    max_demos=max_demos,
+                    min_demo_duration_sec=min_demo_duration_sec,
+                    max_demo_duration_sec=max_demo_duration_sec,
+                    target_demo_bundle_ids=target_demo_bundle_id_set,
                 )
+                included_demo_count += 1
                 _log(
                     verbose,
                     (
@@ -314,9 +450,17 @@ def run_reassemble_eval_pipeline(
                 top_k=top_k,
                 segment_level=resolved_segment_level,
                 selectors=resolved_selectors,
+                metric_ranking=resolved_metric_ranking,
+                frame_cache_dir=resolved_frame_cache_dir,
+                plot_ecod_aggregates=plot_ecod_aggregates,
                 output_path=output_path,
                 eval_path=eval_path,
                 status="running",
+                evaluation_unit=resolved_evaluation_unit,
+                max_demos=max_demos,
+                min_demo_duration_sec=min_demo_duration_sec,
+                max_demo_duration_sec=max_demo_duration_sec,
+                target_demo_bundle_ids=target_demo_bundle_id_set,
             )
             _log(verbose, f"[{current_h5_path.stem}] error: {type(exc).__name__}: {exc}")
 
@@ -334,9 +478,17 @@ def run_reassemble_eval_pipeline(
         top_k=top_k,
         segment_level=resolved_segment_level,
         selectors=resolved_selectors,
+        metric_ranking=resolved_metric_ranking,
+        frame_cache_dir=resolved_frame_cache_dir,
+        plot_ecod_aggregates=plot_ecod_aggregates,
         output_path=output_path,
         eval_path=eval_path,
         status="complete",
+        evaluation_unit=resolved_evaluation_unit,
+        max_demos=max_demos,
+        min_demo_duration_sec=min_demo_duration_sec,
+        max_demo_duration_sec=max_demo_duration_sec,
+        target_demo_bundle_ids=target_demo_bundle_id_set,
     )
     return summary
 
@@ -355,9 +507,111 @@ def _selector_from_config(config: dict[str, Any]) -> MetricEventSelector:
     )
 
 
+def _set_visual_flow_camera_names(config: dict[str, Any], camera_names: list[str]) -> None:
+    metrics_config = config.setdefault("metrics", {})
+    if not isinstance(metrics_config, dict):
+        return
+    visual_flow_config = metrics_config.setdefault("visual_flow", {})
+    if not isinstance(visual_flow_config, dict):
+        return
+    visual_flow_config["camera_names"] = list(camera_names)
+
+
+def _configured_metric_ranking(config: dict[str, Any]) -> Any:
+    selector_config = config_section(config, "selector")
+    surprise_flood_config = selector_config.get("surprise_flood", {})
+    if not isinstance(surprise_flood_config, dict):
+        return "area"
+    return surprise_flood_config.get("ranking", "area")
+
+
+def _resolve_metric_ranking(value: Any) -> str:
+    aliases = {
+        "area": "area",
+        "area_above_base": "area",
+        "persistence": "persistence",
+    }
+    ranking = aliases.get(str(value).strip().lower())
+    if ranking is None:
+        raise ValueError("metric_ranking must be 'area' or 'persistence'.")
+    return ranking
+
+
+def _resolve_evaluation_unit(value: Any) -> str:
+    normalized = str(value).strip().lower()
+    aliases = {
+        "failed": "failed_high_level_action",
+        "failure": "failed_high_level_action",
+        "failed_high_level": "failed_high_level_action",
+        "failed_high_level_action": "failed_high_level_action",
+        "success": "successful_high_level_action",
+        "successful": "successful_high_level_action",
+        "successful_high_level": "successful_high_level_action",
+        "successful_high_level_action": "successful_high_level_action",
+    }
+    resolved = aliases.get(normalized)
+    if resolved is None:
+        raise ValueError(
+            "evaluation_unit must be 'failed_high_level_action' or 'successful_high_level_action'."
+        )
+    return resolved
+
+
+def _no_demo_skip_reason(evaluation_unit: str) -> str:
+    if evaluation_unit == "successful_high_level_action":
+        return "no_successful_high_level_actions_without_failed_low_level_segments"
+    return "no_failed_high_level_actions_with_failed_low_level_segments"
+
+
+def _set_metric_ranking(config: dict[str, Any], ranking: str) -> None:
+    selector_config = config.setdefault("selector", {})
+    if not isinstance(selector_config, dict):
+        raise ValueError("The selector config must be an object.")
+    surprise_flood_config = selector_config.setdefault("surprise_flood", {})
+    if not isinstance(surprise_flood_config, dict):
+        raise ValueError("The selector.surprise_flood config must be an object.")
+    surprise_flood_config["ranking"] = _resolve_metric_ranking(ranking)
+
+
 def _failed_high_level_demo_bundles(bundle: TrajectoryBundle) -> list[TrajectoryBundle]:
     """Split a full REASSEMBLE recording into failed high-level action demos."""
 
+    return _high_level_demo_bundles_for_evaluation(bundle, evaluation_unit="failed_high_level_action")
+
+
+def _high_level_demo_bundles_for_evaluation(
+    bundle: TrajectoryBundle,
+    *,
+    evaluation_unit: str,
+) -> list[TrajectoryBundle]:
+    if evaluation_unit == "failed_high_level_action":
+        return _failed_high_level_demo_bundles_from_segments(bundle)
+    if evaluation_unit == "successful_high_level_action":
+        return _successful_high_level_demo_bundles(bundle)
+    raise ValueError(f"Unsupported REASSEMBLE evaluation_unit: {evaluation_unit}")
+
+
+def _filter_demo_bundles(
+    demo_bundles: list[TrajectoryBundle],
+    *,
+    min_demo_duration_sec: float | None,
+    max_demo_duration_sec: float | None,
+    target_demo_bundle_ids: set[str] | None,
+) -> list[TrajectoryBundle]:
+    filtered: list[TrajectoryBundle] = []
+    for demo_bundle in demo_bundles:
+        if target_demo_bundle_ids is not None and demo_bundle.bundle_id not in target_demo_bundle_ids:
+            continue
+        duration_sec = float(demo_bundle.duration_sec or 0.0)
+        if min_demo_duration_sec is not None and duration_sec < min_demo_duration_sec:
+            continue
+        if max_demo_duration_sec is not None and duration_sec > max_demo_duration_sec:
+            continue
+        filtered.append(demo_bundle)
+    return filtered
+
+
+def _failed_high_level_demo_bundles_from_segments(bundle: TrajectoryBundle) -> list[TrajectoryBundle]:
     segments = _segments(bundle)
     high_segments = [
         segment
@@ -377,7 +631,47 @@ def _failed_high_level_demo_bundles(bundle: TrajectoryBundle) -> list[Trajectory
         failed_low_segments = [segment for segment in low_segments if not bool(segment.get("success", True))]
         if not failed_low_segments:
             continue
-        demo_bundles.append(_crop_bundle_to_high_level_segment(bundle, high_segment, low_segments))
+        demo_bundles.append(
+            _crop_bundle_to_high_level_segment(
+                bundle,
+                high_segment,
+                low_segments,
+                evaluation_unit="failed_high_level_action",
+            )
+        )
+    return demo_bundles
+
+
+def _successful_high_level_demo_bundles(bundle: TrajectoryBundle) -> list[TrajectoryBundle]:
+    """Split a full REASSEMBLE recording into successful high-level action demos."""
+
+    segments = _segments(bundle)
+    high_segments = [
+        segment
+        for segment in segments
+        if segment.get("level") == "high"
+        and bool(segment.get("success", True))
+        and _as_float_or_none(segment.get("start_sec")) is not None
+        and _as_float_or_none(segment.get("end_sec")) is not None
+    ]
+    demo_bundles: list[TrajectoryBundle] = []
+    for high_segment in sorted(high_segments, key=lambda segment: float(segment["start_sec"])):
+        low_segments = [
+            segment
+            for segment in segments
+            if segment.get("level") == "low"
+            and str(segment.get("parent_segment_id")) == str(high_segment.get("segment_id"))
+        ]
+        if any(not bool(segment.get("success", True)) for segment in low_segments):
+            continue
+        demo_bundles.append(
+            _crop_bundle_to_high_level_segment(
+                bundle,
+                high_segment,
+                low_segments,
+                evaluation_unit="successful_high_level_action",
+            )
+        )
     return demo_bundles
 
 
@@ -385,6 +679,7 @@ def _crop_bundle_to_high_level_segment(
     bundle: TrajectoryBundle,
     high_segment: dict[str, Any],
     low_segments: list[dict[str, Any]],
+    evaluation_unit: str = "failed_high_level_action",
 ) -> TrajectoryBundle:
     start_sec = float(high_segment["start_sec"])
     end_sec = float(high_segment["end_sec"])
@@ -401,7 +696,7 @@ def _crop_bundle_to_high_level_segment(
     failed_low_segments = [segment for segment in relative_low_segments if not bool(segment.get("success", True))]
     raw_metadata = {
         **bundle.raw_metadata,
-        "evaluation_unit": "failed_high_level_action",
+        "evaluation_unit": evaluation_unit,
         "source_file_bundle_id": bundle.bundle_id,
         "source_h5_path": str(bundle.root_path) if bundle.root_path is not None else None,
         "high_level_segment_id": high_segment_id,
@@ -435,6 +730,24 @@ def _crop_bundle_to_high_level_segment(
 
 
 def _crop_stream(stream: ModalityStream, start_sec: float, end_sec: float) -> ModalityStream | None:
+    if stream.modality == Modality.AUDIO and stream.data_path is not None:
+        duration_sec = max(0.0, end_sec - start_sec)
+        source_start_sec = float(stream.metadata.get("audio_source_start_sec", 0.0))
+        metadata = {
+            **stream.metadata,
+            "cropped_from_start_sec": start_sec,
+            "cropped_from_end_sec": end_sec,
+            "audio_source_start_sec": source_start_sec + start_sec,
+            "audio_segment_duration_sec": duration_sec,
+        }
+        return ModalityStream(
+            name=stream.name,
+            modality=stream.modality,
+            timestamps_sec=[0.0, duration_sec],
+            data_path=stream.data_path,
+            metadata=metadata,
+        )
+
     records = stream.records or []
     cropped_timestamps: list[float] = []
     cropped_records: list[dict[str, Any]] = []
@@ -818,6 +1131,69 @@ def _finalize_stats_bucket(values: dict[str, float]) -> dict[str, Any]:
     }
 
 
+def _load_resume_state(
+    manifest_path: Path,
+    eval_path: Path,
+    alignment_path: Path,
+    selectors: list[str],
+) -> dict[str, Any]:
+    raw_manifest = _read_json_list_if_exists(manifest_path)
+    raw_eval_rows = _read_jsonl_if_exists(eval_path)
+    requested_selectors = set(selectors)
+
+    selectors_by_bundle: dict[str, set[str]] = defaultdict(set)
+    for row in raw_eval_rows:
+        bundle_id = row.get("bundle_id")
+        selector_name = row.get("selector_name")
+        if isinstance(bundle_id, str) and isinstance(selector_name, str):
+            selectors_by_bundle[bundle_id].add(selector_name)
+
+    completed_demo_bundle_ids: set[str] = set()
+    completed_skipped_h5_paths: set[str] = set()
+    kept_manifest: list[dict[str, Any]] = []
+    for entry in raw_manifest:
+        bundle_id = entry.get("bundle_id")
+        h5_path = entry.get("h5_path")
+        if not isinstance(bundle_id, str):
+            continue
+        if entry.get("included") is True:
+            if requested_selectors.issubset(selectors_by_bundle.get(bundle_id, set())):
+                completed_demo_bundle_ids.add(bundle_id)
+                kept_manifest.append(entry)
+            continue
+        if (
+            isinstance(h5_path, str)
+            and entry.get("skip_reason") not in {None, "error"}
+            and not entry.get("error")
+        ):
+            completed_skipped_h5_paths.add(h5_path)
+            kept_manifest.append(entry)
+
+    kept_eval_rows = [
+        row
+        for row in raw_eval_rows
+        if row.get("bundle_id") in completed_demo_bundle_ids
+        and row.get("selector_name") in requested_selectors
+    ]
+    kept_alignment_ids = {entry.get("bundle_id") for entry in kept_manifest}
+    kept_alignment_h5_paths = {entry.get("h5_path") for entry in kept_manifest}
+    kept_alignment = [
+        entry
+        for entry in _read_json_list_if_exists(alignment_path)
+        if entry.get("bundle_id") in kept_alignment_ids
+        or entry.get("h5_path") in kept_alignment_h5_paths
+    ]
+
+    return {
+        "manifest": kept_manifest,
+        "alignment_debug": kept_alignment,
+        "eval_rows": kept_eval_rows,
+        "completed_demo_bundle_ids": completed_demo_bundle_ids,
+        "completed_skipped_h5_paths": completed_skipped_h5_paths,
+        "rewrite_eval_rows": len(kept_eval_rows) != len(raw_eval_rows),
+    }
+
+
 def _write_checkpoint(
     manifest_path: Path,
     stats_path: Path,
@@ -832,9 +1208,17 @@ def _write_checkpoint(
     top_k: int,
     segment_level: str,
     selectors: list[str],
+    metric_ranking: str,
+    frame_cache_dir: Path,
     output_path: Path,
     eval_path: Path,
     status: str,
+    plot_ecod_aggregates: bool = False,
+    evaluation_unit: str = "failed_high_level_action",
+    max_demos: int | None = None,
+    min_demo_duration_sec: float | None = None,
+    max_demo_duration_sec: float | None = None,
+    target_demo_bundle_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     """Persist current evaluation state so long runs survive interruption."""
 
@@ -844,7 +1228,13 @@ def _write_checkpoint(
     }
     summary = {
         "status": status,
-        "evaluation_unit": "failed_high_level_action",
+        "evaluation_unit": evaluation_unit,
+        "max_demos": max_demos,
+        "min_demo_duration_sec": min_demo_duration_sec,
+        "max_demo_duration_sec": max_demo_duration_sec,
+        "target_demo_bundle_count": (
+            len(target_demo_bundle_ids) if target_demo_bundle_ids is not None else None
+        ),
         "input_count": len(h5_paths),
         "input_file_count": len(h5_paths),
         "processed_count": len(manifest),
@@ -856,6 +1246,9 @@ def _write_checkpoint(
         "top_k": top_k,
         "segment_level": segment_level,
         "selectors": selectors,
+        "metric_ranking": metric_ranking,
+        "frame_cache_dir": str(frame_cache_dir),
+        "plot_ecod_aggregates": plot_ecod_aggregates,
         "output_dir": str(output_path),
         "manifest_path": str(manifest_path),
         "eval_path": str(eval_path),
@@ -878,6 +1271,16 @@ def _append_eval_rows(eval_path: Path, rows: list[dict[str, Any]]) -> None:
         os.fsync(handle.fileno())
 
 
+def _write_eval_rows_atomic(eval_path: Path, rows: list[dict[str, Any]]) -> None:
+    tmp_path = eval_path.with_name(f"{eval_path.name}.tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    tmp_path.replace(eval_path)
+
+
 def _write_json_atomic(path: Path, payload: Any) -> None:
     tmp_path = path.with_name(f"{path.name}.tmp")
     with tmp_path.open("w", encoding="utf-8") as handle:
@@ -886,6 +1289,34 @@ def _write_json_atomic(path: Path, payload: Any) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     tmp_path.replace(path)
+
+
+def _read_json_list_if_exists(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _read_jsonl_if_exists(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            rows.append(value)
+    return rows
 
 
 def _manifest_entry(bundle: TrajectoryBundle, h5_path: Path) -> dict[str, Any]:
@@ -941,6 +1372,7 @@ def _proposal_to_peak_dict(proposal: KeyEventProposal) -> dict[str, Any]:
         "start_sec": proposal.time_window.start_sec,
         "end_sec": proposal.time_window.end_sec,
         "proposal_score": proposal.metadata.get("proposal_score"),
+        "rank_score_type": proposal.metadata.get("rank_score_type"),
         "persistence": proposal.metadata.get("persistence"),
         "area_above_base": proposal.metadata.get("area_above_base"),
         "width_sec": proposal.metadata.get("width_sec"),

@@ -5,9 +5,20 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from pathologist.metrics.audio import AudioSpectralFluxMetric
 from pathologist.metrics.base import MetricComputationContext, MetricComputer
-from pathologist.metrics.gripper import GripperChatterMetric, GripperTransitionMetric
+from pathologist.metrics.gripper import (
+    GripperApertureSpeedMetric,
+    GripperChatterMetric,
+    GripperTransitionMetric,
+)
 from pathologist.metrics.kinematics import (
+    EefAngularJerkMetric,
+    EefAngularVelocitySpikeMetric,
+    EefLinearVelocitySpikeMetric,
+    EefRotationalStallingMetric,
+    EefTranslationalJerkMetric,
+    EefTranslationalStallingMetric,
     EndEffectorCartesianPathLengthMetric,
     JointPathLengthMetric,
     MotionSmoothnessMetric,
@@ -18,6 +29,7 @@ from pathologist.metrics.signals import (
     ActionDiscontinuityMetric,
     ActionDistributionEntropyMetric,
     ActionRangeSaturationMetric,
+    ForceNormMetric,
 )
 from pathologist.metrics.surprise import ECODSurpriseScorer
 from pathologist.metrics.timing import TimestampRegularityMetric
@@ -39,7 +51,16 @@ def default_metric_computers() -> list[MetricComputer]:
         MotionSmoothnessMetric(),
         VelocitySpikeMetric(),
         StallingMetric(),
+        EefLinearVelocitySpikeMetric(),
+        EefAngularVelocitySpikeMetric(),
+        EefTranslationalStallingMetric(),
+        EefRotationalStallingMetric(),
+        EefTranslationalJerkMetric(),
+        EefAngularJerkMetric(),
+        ForceNormMetric(),
         VisualFlowMetric(),
+        AudioSpectralFluxMetric(),
+        GripperApertureSpeedMetric(),
         GripperTransitionMetric(),
         GripperChatterMetric(),
     ]

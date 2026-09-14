@@ -31,6 +31,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="low",
         help="Which failure segment level to score. Defaults to low-level failures inside each high-level demo.",
     )
+    parser.add_argument(
+        "--metric-ranking",
+        choices=["area", "persistence"],
+        default=None,
+        help="Rank metric proposals by area or persistence. Defaults to the config value (area in default_config.json).",
+    )
+    parser.add_argument(
+        "--evaluation-unit",
+        choices=["failed_high_level_action", "successful_high_level_action"],
+        default="failed_high_level_action",
+        help="Which high-level demos to include. Defaults to failed high-level actions.",
+    )
     parser.add_argument("--config", dest="config_path", help="Optional pathologist config JSON override.")
     parser.add_argument(
         "--robot-downsample-hz",
@@ -40,9 +52,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--camera-name",
+        "--camera",
         dest="camera_names",
         action="append",
-        help="Camera dataset to decode/use. Can be passed multiple times. Defaults to hand.",
+        choices=["hand", "hama1", "hama2"],
+        help=(
+            "RGB camera dataset to decode/use. Can be passed multiple times. "
+            "Defaults to hama1, hama2, and hand."
+        ),
     )
     parser.add_argument(
         "--include-event-camera",
@@ -55,7 +72,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Skip frame extraction and visual-flow metric for faster telemetry-only debugging.",
     )
+    parser.add_argument(
+        "--frame-cache-dir",
+        default=None,
+        help="Optional shared decoded-frame cache. Defaults to <output-dir>/frame_cache.",
+    )
+    parser.add_argument(
+        "--plot",
+        action="store_true",
+        help="Write raw/smoothed ECOD aggregate plots and local-maxima JSON under ecod_aggregates/.",
+    )
     parser.add_argument("--max-files", type=int, default=None, help="Optional cap for folder evaluation.")
+    parser.add_argument(
+        "--max-demos",
+        type=int,
+        default=None,
+        help="Optional cap on included high-level demos across all input files.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from existing manifest/eval outputs in --output-dir instead of truncating them.",
+    )
     parser.add_argument("--verbose", action="store_true", help="Print progress logs.")
     return parser
 
@@ -73,8 +111,14 @@ def main() -> None:
         camera_names=args.camera_names,
         include_event_camera=args.include_event_camera,
         extract_frames=False if args.no_extract_frames else None,
+        frame_cache_dir=args.frame_cache_dir,
         max_files=args.max_files,
         selectors=args.selectors,
+        metric_ranking=args.metric_ranking,
+        evaluation_unit=args.evaluation_unit,
+        max_demos=args.max_demos,
+        plot_ecod_aggregates=args.plot,
+        resume=args.resume,
         verbose=args.verbose,
     )
     print(json.dumps(summary, indent=2))

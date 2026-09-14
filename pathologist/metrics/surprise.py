@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,9 +16,16 @@ DEFAULT_SURPRISE_SOURCE_METRICS = [
     "motion_smoothness",
     "velocity_spike",
     "stalling",
+    "eef_linear_velocity_spike",
+    "eef_angular_velocity_spike",
+    "eef_translational_stalling",
+    "eef_rotational_stalling",
+    "eef_translational_jerk",
+    "eef_angular_jerk",
+    "gripper_aperture_speed",
     "visual_flow",
+    "audio_spectral_flux",
 ]
-
 
 @dataclass(slots=True)
 class ECODScoreResult:
@@ -50,10 +58,20 @@ class ECODSurpriseScorer:
             self.surprise_config.get("aggregate_metric_name", "ecod_aggregate_score")
         )
         tail_overrides = self.surprise_config.get("score_tail_overrides", {})
-        self.score_tail_overrides = {"stalling": "left"}
+        self.score_tail_overrides = {
+            "stalling": "left",
+            "eef_translational_stalling": "left",
+            "eef_rotational_stalling": "left",
+            "gripper_aperture_speed": "right",
+            "audio_spectral_flux": "right",
+        }
         if isinstance(tail_overrides, dict):
             self.score_tail_overrides.update(tail_overrides)
         self.score_tail_overrides["stalling"] = "left"
+        self.score_tail_overrides["eef_translational_stalling"] = "left"
+        self.score_tail_overrides["eef_rotational_stalling"] = "left"
+        self.score_tail_overrides["gripper_aperture_speed"] = "right"
+        self.score_tail_overrides["audio_spectral_flux"] = "right"
 
         skewness_overrides = self.surprise_config.get("skewness_sign_overrides", {})
         self.skewness_sign_overrides = {"stalling": -1}
@@ -118,7 +136,24 @@ class ECODSurpriseScorer:
 
         values = [float(sample.value) for sample in scalar_samples]
         skewness_sign_override = _skewness_sign_override(source_metric.name, self.skewness_sign_overrides)
-        scores = ecod_scores(values, epsilon=self.epsilon, skewness_sign_override=skewness_sign_override)
+        component_values = _metric_component_values(source_metric, len(values))
+        component_scores = {
+            name: ecod_scores(
+                values,
+                epsilon=self.epsilon,
+                skewness_sign_override=skewness_sign_override,
+            )
+            for name, values in component_values.items()
+        }
+        scores = (
+            _max_component_scores(component_scores)
+            if len(component_scores) > 1
+            else ecod_scores(
+                values,
+                epsilon=self.epsilon,
+                skewness_sign_override=skewness_sign_override,
+            )
+        )
         score_tail_mode = _score_tail_mode(source_metric.name, self.score_tail_overrides)
         sample_scores = _scores_for_tail_mode(scores, score_tail_mode)
         return MetricResult(
@@ -153,6 +188,20 @@ class ECODSurpriseScorer:
                 "right_tail_scores": scores.right_tail_scores,
                 "skew_tail_scores": scores.skew_tail_scores,
                 "source_values": values,
+                "component_names": list(component_scores),
+                "component_reduction": (
+                    "per_tail_max_after_ecod" if len(component_scores) > 1 else None
+                ),
+                "component_source_values": component_values,
+                "component_left_tail_scores": {
+                    name: score.left_tail_scores for name, score in component_scores.items()
+                },
+                "component_right_tail_scores": {
+                    name: score.right_tail_scores for name, score in component_scores.items()
+                },
+                "component_skew_tail_scores": {
+                    name: score.skew_tail_scores for name, score in component_scores.items()
+                },
             },
         )
 
@@ -194,14 +243,48 @@ class ECODSurpriseScorer:
                 },
             )
 
-        per_feature_scores = [
-            ecod_scores(
-                feature_values,
-                epsilon=self.epsilon,
-                skewness_sign_override=_skewness_sign_override(metric_name, self.skewness_sign_overrides),
+        per_feature_scores: list[ECODScoreResult] = []
+        feature_score_tail_modes: dict[str, str] = {}
+        grouped_feature_names: dict[str, list[str]] = {}
+        for index, (metric_name, feature_values) in enumerate(
+            zip(aligned["metric_names"], aligned["feature_values"])
+        ):
+            skewness_sign_override = _skewness_sign_override(
+                metric_name,
+                self.skewness_sign_overrides,
             )
-            for metric_name, feature_values in zip(aligned["metric_names"], aligned["feature_values"])
-        ]
+            source_metric = source_metrics[index]
+            component_values = _metric_component_values(
+                source_metric,
+                len(_scalar_samples(source_metric)),
+            )
+            nearest_indices = aligned["feature_sample_indices"][index]
+            aligned_component_values = {
+                name: [values[sample_index] for sample_index in nearest_indices]
+                for name, values in component_values.items()
+            }
+            component_scores = {
+                name: ecod_scores(
+                    values,
+                    epsilon=self.epsilon,
+                    skewness_sign_override=skewness_sign_override,
+                )
+                for name, values in aligned_component_values.items()
+            }
+            if len(component_scores) > 1:
+                grouped_feature_names[metric_name] = list(component_scores)
+                scores = _max_component_scores(component_scores)
+            else:
+                scores = ecod_scores(
+                    feature_values,
+                    epsilon=self.epsilon,
+                    skewness_sign_override=skewness_sign_override,
+                )
+            score_tail_mode = _score_tail_mode(metric_name, self.score_tail_overrides)
+            feature_score_tail_modes[metric_name] = score_tail_mode
+            per_feature_scores.append(
+                _scores_for_aggregate_tail_mode(scores, score_tail_mode)
+            )
         aggregate_left_scores = [
             sum(feature_score.left_tail_scores[index] for feature_score in per_feature_scores)
             for index in range(len(aligned["timestamps"]))
@@ -274,6 +357,11 @@ class ECODSurpriseScorer:
                     metric_name: _skewness_sign_override(metric_name, self.skewness_sign_overrides)
                     for metric_name in aligned["metric_names"]
                 },
+                "feature_score_tail_modes": feature_score_tail_modes,
+                "grouped_feature_names": grouped_feature_names,
+                "grouped_feature_reduction": (
+                    "per_tail_max_after_ecod" if grouped_feature_names else None
+                ),
             },
         )
 
@@ -324,6 +412,85 @@ def _scores_for_tail_mode(scores: ECODScoreResult, tail_mode: str) -> list[float
     return scores.outlier_scores
 
 
+def _scores_for_aggregate_tail_mode(
+    scores: ECODScoreResult,
+    tail_mode: str,
+) -> ECODScoreResult:
+    """Apply a directional metric override to every aggregate ECOD branch."""
+
+    if tail_mode == "auto":
+        return scores
+    selected_scores = _scores_for_tail_mode(scores, tail_mode)
+    return ECODScoreResult(
+        left_tail_scores=list(selected_scores),
+        right_tail_scores=list(selected_scores),
+        skew_tail_scores=list(selected_scores),
+        outlier_scores=list(selected_scores),
+        skewness=scores.skewness,
+        skewness_sign=scores.skewness_sign,
+    )
+
+
+def _metric_component_values(
+    metric: MetricResult,
+    expected_count: int,
+) -> dict[str, list[float]]:
+    """Return complete, numeric per-component source series for ECOD scoring."""
+
+    raw_components = metric.metadata.get("ecod_component_values")
+    if not isinstance(raw_components, dict):
+        return {}
+
+    components: dict[str, list[float]] = {}
+    for raw_name, raw_values in raw_components.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_values, (list, tuple)):
+            continue
+        if len(raw_values) != expected_count:
+            continue
+        if not all(isinstance(value, (int, float, bool)) for value in raw_values):
+            continue
+        components[raw_name] = [float(value) for value in raw_values]
+    return components if len(components) > 1 else {}
+
+
+def _max_component_scores(
+    component_scores: dict[str, ECODScoreResult],
+) -> ECODScoreResult:
+    """Collapse independent component ECOD scores with a pointwise maximum."""
+
+    scores = list(component_scores.values())
+    if not scores:
+        return ECODScoreResult([], [], [], [], 0.0, 0)
+    count = min(len(score.outlier_scores) for score in scores)
+    left_scores = [
+        max(score.left_tail_scores[index] for score in scores)
+        for index in range(count)
+    ]
+    right_scores = [
+        max(score.right_tail_scores[index] for score in scores)
+        for index in range(count)
+    ]
+    skew_scores = [
+        max(score.skew_tail_scores[index] for score in scores)
+        for index in range(count)
+    ]
+    return ECODScoreResult(
+        left_tail_scores=left_scores,
+        right_tail_scores=right_scores,
+        skew_tail_scores=skew_scores,
+        outlier_scores=[
+            max(left_score, right_score, skew_score)
+            for left_score, right_score, skew_score in zip(
+                left_scores,
+                right_scores,
+                skew_scores,
+            )
+        ],
+        skewness=0.0,
+        skewness_sign=0,
+    )
+
+
 def _skewness_sign_override(metric_name: str, overrides: dict[Any, Any]) -> int | None:
     value = overrides.get(metric_name)
     if isinstance(value, bool):
@@ -337,8 +504,9 @@ def _skewness_sign_override(metric_name: str, overrides: dict[Any, Any]) -> int 
 
 def _empirical_cdf(values: list[float]) -> list[float]:
     count = len(values)
+    sorted_values = sorted(values)
     return [
-        sum(1 for candidate in values if candidate <= value) / count
+        bisect_right(sorted_values, value) / count
         for value in values
     ]
 
@@ -350,6 +518,7 @@ def _align_scalar_metric_samples(metrics: list[MetricResult]) -> dict[str, Any]:
     anchor_samples = _scalar_samples(anchor_metric)
     timestamps = [sample.timestamp_sec for sample in anchor_samples]
     feature_values: list[list[float]] = []
+    feature_sample_indices: list[list[int]] = []
     alignment: dict[str, Any] = {
         "method": "nearest_timestamp_to_first_metric_grid",
         "anchor_metric_name": anchor_metric.name,
@@ -362,6 +531,7 @@ def _align_scalar_metric_samples(metrics: list[MetricResult]) -> dict[str, Any]:
         metric_times = [sample.timestamp_sec for sample in samples]
         metric_values = [float(sample.value) for sample in samples]
         aligned_values = []
+        nearest_indices = []
         max_abs_delta = 0.0
         for timestamp in timestamps:
             nearest_index = min(
@@ -370,13 +540,16 @@ def _align_scalar_metric_samples(metrics: list[MetricResult]) -> dict[str, Any]:
             )
             max_abs_delta = max(max_abs_delta, abs(metric_times[nearest_index] - timestamp))
             aligned_values.append(metric_values[nearest_index])
+            nearest_indices.append(nearest_index)
         feature_values.append(aligned_values)
+        feature_sample_indices.append(nearest_indices)
         alignment["per_metric_max_abs_time_delta_sec"][metric.name] = max_abs_delta
 
     return {
         "timestamps": timestamps,
         "metric_names": [metric.name for metric in metrics],
         "feature_values": feature_values,
+        "feature_sample_indices": feature_sample_indices,
         "alignment": alignment,
     }
 

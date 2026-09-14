@@ -89,6 +89,41 @@ def test_metric_selector_attaches_visual_context_frames() -> None:
     assert {frame.camera_name for frame in proposals[0].candidate_frames} == {"head", "wrist"}
 
 
+def test_metric_selector_writes_ecod_aggregate_plots_and_local_maxima(tmp_path: Path) -> None:
+    output_base = tmp_path / "ecod_aggregates" / "demo"
+    selector = MetricEventSelector(
+        surprise_flood_config={
+            "aggregate_metric_name": "ecod_aggregate_score",
+            "smoothing_window": 1,
+            "gamma": 0.5,
+            "max_proposals": 2,
+        },
+    )
+
+    selector.select(_aggregate_profile(), ecod_aggregate_path=output_base)
+
+    assert output_base.with_suffix(".json").exists()
+    assert output_base.with_name("demo_raw.png").exists()
+    assert output_base.with_name("demo_smoothed.png").exists()
+    payload = json.loads(output_base.with_suffix(".json").read_text(encoding="utf-8"))
+    assert payload["available"] is True
+    assert payload["local_maxima_count"] >= 2
+    assert payload["selected_local_maxima_count"] == 2
+    assert payload["raw_scores"]
+    assert payload["smoothed_scores"]
+    assert payload["source_metric_series"]["velocity_spike"]["raw_values"] == [
+        0.0,
+        0.1,
+        0.2,
+        0.3,
+        0.4,
+        0.5,
+        0.6,
+        0.7,
+        0.8,
+    ]
+
+
 def test_metric_selector_returns_no_proposals_without_aggregate_score() -> None:
     profile = MetricProfile(
         bundle_id="demo",
@@ -108,6 +143,104 @@ def test_metric_selector_returns_no_proposals_without_aggregate_score() -> None:
     assert MetricEventSelector().select(profile) == []
 
 
+def test_metric_selector_includes_zero_persistence_peak() -> None:
+    profile = MetricProfile(
+        bundle_id="flat",
+        metrics=[
+            MetricResult(
+                name="ecod_aggregate_score",
+                description="flat aggregate surprise",
+                samples=[
+                    MetricSample(timestamp_sec=float(index), value=1.0)
+                    for index in range(5)
+                ],
+            )
+        ],
+    )
+    selector = MetricEventSelector(
+        surprise_flood_config={
+            "aggregate_metric_name": "ecod_aggregate_score",
+            "smoothing_window": 1,
+            "gamma": 0.5,
+            "max_proposals": 5,
+        },
+    )
+
+    proposals = selector.select(profile)
+
+    assert len(proposals) == 1
+    assert proposals[0].metadata["persistence"] == 0.0
+    assert proposals[0].metadata["rank_score_type"] == "area_above_base"
+
+
+def test_metric_selector_ranks_proposals_by_area_persistence_then_peak_height() -> None:
+    profile = _area_vs_persistence_profile()
+    selector = MetricEventSelector(
+        surprise_flood_config={
+            "aggregate_metric_name": "ecod_aggregate_score",
+            "smoothing_window": 1,
+            "gamma": 0.5,
+            "max_proposals": 2,
+        },
+    )
+
+    proposals = selector.select(profile)
+
+    assert [proposal.metadata["peak_sec"] for proposal in proposals] == [6.0, 2.0]
+    assert [proposal.metadata["rank_score_type"] for proposal in proposals] == [
+        "area_above_base",
+        "area_above_base",
+    ]
+
+
+def test_metric_selector_can_rank_by_persistence_then_area() -> None:
+    selector = MetricEventSelector(
+        surprise_flood_config={
+            "aggregate_metric_name": "ecod_aggregate_score",
+            "smoothing_window": 1,
+            "gamma": 0.5,
+            "ranking": "persistence",
+            "max_proposals": 2,
+        },
+    )
+
+    proposals = selector.select(_area_vs_persistence_profile())
+
+    assert [proposal.metadata["peak_sec"] for proposal in proposals] == [2.0, 6.0]
+    assert [proposal.metadata["rank_score_type"] for proposal in proposals] == [
+        "persistence",
+        "persistence",
+    ]
+    assert [proposal.metadata["proposal_score"] for proposal in proposals] == [
+        proposal.metadata["persistence"] for proposal in proposals
+    ]
+
+
+def _area_vs_persistence_profile() -> MetricProfile:
+    return MetricProfile(
+        bundle_id="height_rank",
+        metrics=[
+            MetricResult(
+                name="ecod_aggregate_score",
+                description="aggregate surprise",
+                samples=[
+                    MetricSample(timestamp_sec=0.0, value=0.0),
+                    MetricSample(timestamp_sec=1.0, value=0.0),
+                    MetricSample(timestamp_sec=2.0, value=10.0),
+                    MetricSample(timestamp_sec=3.0, value=0.0),
+                    MetricSample(timestamp_sec=4.0, value=0.0),
+                    MetricSample(timestamp_sec=5.0, value=6.0),
+                    MetricSample(timestamp_sec=6.0, value=6.0),
+                    MetricSample(timestamp_sec=7.0, value=6.0),
+                    MetricSample(timestamp_sec=8.0, value=6.0),
+                    MetricSample(timestamp_sec=9.0, value=0.0),
+                    MetricSample(timestamp_sec=10.0, value=0.0),
+                ],
+            )
+        ],
+    )
+
+
 def _aggregate_profile() -> MetricProfile:
     return MetricProfile(
         bundle_id="demo",
@@ -116,6 +249,7 @@ def _aggregate_profile() -> MetricProfile:
                 name="ecod_aggregate_score",
                 description="aggregate surprise",
                 unit="surprise",
+                metadata={"source_metric_names": ["velocity_spike"]},
                 samples=[
                     MetricSample(timestamp_sec=0.0, value=0.0),
                     MetricSample(timestamp_sec=1.0, value=1.0),
@@ -126,6 +260,22 @@ def _aggregate_profile() -> MetricProfile:
                     MetricSample(timestamp_sec=6.0, value=8.0),
                     MetricSample(timestamp_sec=7.0, value=2.0),
                     MetricSample(timestamp_sec=8.0, value=0.0),
+                ],
+            ),
+            MetricResult(
+                name="velocity_spike",
+                description="raw velocity spike score",
+                unit="m/s",
+                samples=[
+                    MetricSample(timestamp_sec=0.0, value=0.0),
+                    MetricSample(timestamp_sec=1.0, value=0.1),
+                    MetricSample(timestamp_sec=2.0, value=0.2),
+                    MetricSample(timestamp_sec=3.0, value=0.3),
+                    MetricSample(timestamp_sec=4.0, value=0.4),
+                    MetricSample(timestamp_sec=5.0, value=0.5),
+                    MetricSample(timestamp_sec=6.0, value=0.6),
+                    MetricSample(timestamp_sec=7.0, value=0.7),
+                    MetricSample(timestamp_sec=8.0, value=0.8),
                 ],
             )
         ],

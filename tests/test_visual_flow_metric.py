@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from pathologist.metrics import MetricEngine, VisualFlowMetric
+from pathologist.metrics.robot_masking import (
+    GroundedSAM2RobotArmMasker,
+    RobotMaskBatch,
+    _deduplicate_detections,
+)
 from pathologist.metrics.surprise import ECODSurpriseScorer
+from pathologist.metrics.vision import _aggregate_flow_magnitudes
 from pathologist.schemas import BundleFormat, CameraFrameRef, MetricProfile, TrajectoryBundle
 
 
@@ -57,6 +63,201 @@ def test_visual_flow_metric_is_unavailable_when_configured_camera_is_missing(tmp
     assert result.metadata["configured_camera_names"] == ["head"]
     assert result.metadata["matched_camera_names"] == []
     assert "no frames found" in result.metadata["unavailable_reason"]
+
+
+def test_visual_flow_can_exclude_grounded_sam2_robot_masks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames = _write_shifted_square_frames(tmp_path, camera_name="head")
+    bundle = TrajectoryBundle(
+        bundle_id="masked-visual-demo",
+        source_format=BundleFormat.CUSTOM,
+        camera_frames=frames,
+    )
+
+    class FakeRobotMasker:
+        def __init__(self, config):
+            self.config = config
+
+        def masks_for_paths(self, paths):
+            masks = []
+            for _ in paths:
+                mask = np.zeros((80, 80), dtype=bool)
+                mask[:, :64] = True
+                masks.append(mask)
+            return RobotMaskBatch(
+                masks=masks,
+                metadata={"method": "fake_grounded_sam2"},
+            )
+
+    monkeypatch.setattr(
+        "pathologist.metrics.vision.GroundedSAM2RobotArmMasker",
+        FakeRobotMasker,
+    )
+    unmasked = VisualFlowMetric().compute(
+        _context(
+            bundle,
+            config={"metrics": {"visual_flow": {"frame_stride": 1}}},
+        )
+    )
+    masked = VisualFlowMetric().compute(
+        _context(
+            bundle,
+            config={
+                "metrics": {
+                    "visual_flow": {
+                        "frame_stride": 1,
+                        "robot_masking": {
+                            "enabled": True,
+                            "prompt": "robot arm. robot gripper.",
+                            "dilation_px": 2,
+                        },
+                    }
+                }
+            },
+        )
+    )
+
+    assert masked.metadata["robot_masking_enabled"] is True
+    assert masked.metadata["robot_mask_metadata"]["head"]["method"] == "fake_grounded_sam2"
+    assert masked.metadata["robot_mask_dilation_px"] == 2
+    assert masked.metadata["mean_robot_mask_fraction"] > 0.8
+    assert max(sample.value for sample in masked.samples) < max(
+        sample.value for sample in unmasked.samples
+    )
+
+
+def test_top_fraction_flow_mean_focuses_on_largest_magnitudes() -> None:
+    magnitudes = np.arange(100, dtype=np.float32)
+
+    assert _aggregate_flow_magnitudes(
+        magnitudes,
+        aggregation="mean",
+        top_fraction=0.02,
+    ) == pytest.approx(49.5)
+    assert _aggregate_flow_magnitudes(
+        magnitudes,
+        aggregation="top_fraction_mean",
+        top_fraction=0.02,
+    ) == pytest.approx(98.5)
+
+
+def test_visual_flow_takes_timestamp_aligned_max_across_cameras(
+    tmp_path: Path,
+) -> None:
+    head_frames = _write_shifted_square_frames(tmp_path, camera_name="head")
+    wrist_frames = _write_shifted_square_frames(tmp_path, camera_name="wrist")
+    bundle = TrajectoryBundle(
+        bundle_id="multi-camera-visual-demo",
+        source_format=BundleFormat.CUSTOM,
+        camera_frames=[*head_frames, *wrist_frames],
+    )
+    shared_config = {
+        "frame_stride": 1,
+        "resize": [128, 128],
+        "spatial_aggregation": "top_fraction_mean",
+        "top_fraction": 0.02,
+    }
+
+    head = VisualFlowMetric().compute(
+        _context(
+            bundle,
+            config={
+                "metrics": {
+                    "visual_flow": {**shared_config, "camera_names": ["head"]}
+                }
+            },
+        )
+    )
+    wrist = VisualFlowMetric().compute(
+        _context(
+            bundle,
+            config={
+                "metrics": {
+                    "visual_flow": {**shared_config, "camera_names": ["wrist"]}
+                }
+            },
+        )
+    )
+    combined = VisualFlowMetric().compute(
+        _context(
+            bundle,
+            config={
+                "metrics": {
+                    "visual_flow": {
+                        **shared_config,
+                        "camera_names": ["head", "wrist"],
+                    }
+                }
+            },
+        )
+    )
+
+    expected = [
+        max(float(head_sample.value), float(wrist_sample.value))
+        for head_sample, wrist_sample in zip(head.samples, wrist.samples)
+    ]
+    assert [float(sample.value) for sample in combined.samples] == pytest.approx(
+        expected
+    )
+    assert combined.metadata["camera_aggregation"] == (
+        "max_after_linear_time_alignment"
+    )
+    assert combined.metadata["camera_reference_timeline"] == "head"
+    assert combined.metadata["camera_flow_sample_counts"] == {
+        "head": 4,
+        "wrist": 4,
+    }
+
+
+def test_robot_masking_redetects_at_each_chunk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = [frame.image_path for frame in _write_shifted_square_frames(tmp_path, "head")]
+    masker = GroundedSAM2RobotArmMasker({"chunk_size_frames": 2})
+    detection_calls = []
+    tracking_chunk_sizes = []
+
+    monkeypatch.setattr(masker, "_load_models", lambda: None)
+
+    def fake_detect(image):
+        detection_calls.append(image.size)
+        return [[0.0, 0.0, 20.0, 20.0]]
+
+    def fake_track(chunk_paths, boxes):
+        tracking_chunk_sizes.append(len(chunk_paths))
+        return [np.zeros((80, 80), dtype=bool) for _ in chunk_paths]
+
+    monkeypatch.setattr(masker, "_detect_robot_boxes", fake_detect)
+    monkeypatch.setattr(masker, "_track_boxes", fake_track)
+
+    result = masker.masks_for_paths(paths)
+
+    assert len(detection_calls) == 3
+    assert tracking_chunk_sizes == [2, 2, 1]
+    assert result.metadata["chunk_detection_counts"] == [1, 1, 1]
+    assert result.metadata["chunk_count"] == 3
+
+
+def test_robot_detection_suppression_has_no_numerical_cap() -> None:
+    boxes = [
+        [0.0, 0.0, 10.0, 10.0],
+        [0.1, 0.1, 10.1, 10.1],
+        [20.0, 0.0, 30.0, 10.0],
+        [40.0, 0.0, 50.0, 10.0],
+        [60.0, 0.0, 70.0, 10.0],
+        [80.0, 0.0, 90.0, 10.0],
+    ]
+
+    kept = _deduplicate_detections(
+        boxes,
+        [0.8, 0.9, 0.7, 0.6, 0.5, 0.4],
+        iou_threshold=0.8,
+    )
+
+    assert kept == [boxes[1], boxes[2], boxes[3], boxes[4], boxes[5]]
 
 
 def test_visual_flow_is_in_default_engine_and_ecod_aggregate(tmp_path: Path) -> None:

@@ -2,9 +2,44 @@
 
 from __future__ import annotations
 
+import pytest
+
 from pathologist.metrics.base import MetricComputationContext
-from pathologist.metrics.gripper import GripperChatterMetric, GripperTransitionMetric
+from pathologist.metrics.gripper import (
+    GripperApertureSpeedMetric,
+    GripperChatterMetric,
+    GripperTransitionMetric,
+)
 from pathologist.schemas import BundleFormat, Modality, ModalityStream, TrajectoryBundle
+
+
+def test_gripper_aperture_speed_uses_continuous_position_change() -> None:
+    timestamps = [0.0, 0.1, 0.2]
+    records = [
+        {"gripper": [0.0, 0.0]},
+        {"gripper": [0.1, 0.1]},
+        {"gripper": [0.4, 0.4]},
+    ]
+    bundle = TrajectoryBundle(
+        bundle_id="aperture-speed",
+        source_format=BundleFormat.CUSTOM,
+        streams=[
+            ModalityStream(
+                name="gripper",
+                modality=Modality.GRIPPER,
+                timestamps_sec=timestamps,
+                records=records,
+            )
+        ],
+    )
+
+    result = GripperApertureSpeedMetric().compute(
+        MetricComputationContext(bundle=bundle)
+    )
+
+    assert [sample.timestamp_sec for sample in result.samples] == [0.1, 0.2]
+    assert [sample.value for sample in result.samples] == pytest.approx([2.0, 6.0])
+    assert result.metadata["surprise_tail_interpretation"] == "right"
 
 
 def test_single_gripper_transition_is_key_event() -> None:

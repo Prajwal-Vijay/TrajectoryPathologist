@@ -76,6 +76,46 @@ def extract_vector_series(
     return value_timestamps, values
 
 
+def vector_group_indices(
+    stream: ModalityStream | None,
+    vector_width: int,
+) -> dict[str, list[int]]:
+    """Return validated named dimension groups supplied by an adapter."""
+
+    if stream is None:
+        return {}
+    raw_groups = stream.metadata.get("vector_groups")
+    if not isinstance(raw_groups, dict):
+        return {}
+
+    groups: dict[str, list[int]] = {}
+    for raw_name, raw_indices in raw_groups.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_indices, (list, tuple)):
+            continue
+        indices = sorted(
+            {
+                int(index)
+                for index in raw_indices
+                if isinstance(index, int) and 0 <= index < vector_width
+            }
+        )
+        if indices:
+            groups[raw_name] = indices
+    return groups
+
+
+def grouped_l2_norms(
+    vector: list[float],
+    groups: dict[str, list[int]],
+) -> dict[str, float]:
+    """Compute one L2 norm per named vector-dimension group."""
+
+    return {
+        name: l2_norm([vector[index] for index in indices if index < len(vector)])
+        for name, indices in groups.items()
+    }
+
+
 def as_float_vector(value: Any) -> list[float]:
     """Convert scalar/list-like values into a flat float vector."""
 

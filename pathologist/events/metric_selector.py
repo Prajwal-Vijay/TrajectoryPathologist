@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ class SurpriseFloodEvent:
     width_sec: float
     area_above_base: float
     rank_score: float
+    rank_score_type: str = "area_above_base"
     death_index: int | None = None
     merge_sec: float | None = None
     is_global_peak: bool = False
@@ -65,12 +67,14 @@ class MetricEventSelector:
         metric_profile: MetricProfile,
         trajectory_bundle: TrajectoryBundle | None = None,
         debug_timeline_path: str | Path | None = None,
+        ecod_aggregate_path: str | Path | None = None,
     ) -> list[KeyEventProposal]:
         """Build ranked key-event proposals from the aggregate surprise landscape."""
 
         proposals = self._select_surprise_flood_proposals(
             metric_profile=metric_profile,
             trajectory_bundle=trajectory_bundle,
+            ecod_aggregate_path=Path(ecod_aggregate_path) if ecod_aggregate_path is not None else None,
         )
         if debug_timeline_path is not None:
             self._write_surprise_flood_debug_timeline(
@@ -84,6 +88,7 @@ class MetricEventSelector:
         self,
         metric_profile: MetricProfile,
         trajectory_bundle: TrajectoryBundle | None,
+        ecod_aggregate_path: Path | None = None,
     ) -> list[KeyEventProposal]:
         """Build proposals from persistent peaks in the aggregate ECOD surprise curve."""
 
@@ -93,6 +98,13 @@ class MetricEventSelector:
         metric_lookup = {metric.name: metric for metric in metric_profile.metrics}
         aggregate_metric = metric_lookup.get(aggregate_metric_name)
         if aggregate_metric is None or not aggregate_metric.samples:
+            if ecod_aggregate_path is not None:
+                self._write_ecod_aggregate_debug_unavailable(
+                    metric_profile=metric_profile,
+                    ecod_aggregate_path=ecod_aggregate_path,
+                    aggregate_metric_name=aggregate_metric_name,
+                    reason="aggregate metric missing or has no samples",
+                )
             return []
 
         timestamps: list[float] = []
@@ -103,11 +115,23 @@ class MetricEventSelector:
             timestamps.append(float(sample.timestamp_sec))
             raw_scores.append(float(sample.value))
         if len(timestamps) < 3:
+            if ecod_aggregate_path is not None:
+                self._write_ecod_aggregate_debug_unavailable(
+                    metric_profile=metric_profile,
+                    ecod_aggregate_path=ecod_aggregate_path,
+                    aggregate_metric_name=aggregate_metric_name,
+                    reason="requires at least three numeric aggregate samples",
+                    timestamps=timestamps,
+                    raw_scores=raw_scores,
+                )
             return []
 
         smooth_window = int(self.surprise_flood_config.get("smoothing_window", 1))
         gamma = float(self.surprise_flood_config.get("gamma", 0.5))
         max_proposals = int(self.surprise_flood_config.get("max_proposals", 0))
+        ranking = _resolve_surprise_flood_ranking(
+            self.surprise_flood_config.get("ranking", "area")
+        )
         gamma = min(1.0, max(0.0, gamma))
         # smoothed_scores = _centered_moving_average(raw_scores, max(1, smooth_window))
         # smoothed_scores = _centered_gaussian_filter(raw_scores, sigma=2.5)
@@ -118,8 +142,29 @@ class MetricEventSelector:
             scores=smoothed_scores,
             gamma=gamma,
         )
-        if max_proposals > 0:
-            flood_events = flood_events[:max_proposals]
+        flood_events = _rank_surprise_flood_events(flood_events, ranking=ranking)
+        all_flood_events = flood_events
+        selected_flood_events = (
+            all_flood_events[:max_proposals]
+            if max_proposals > 0
+            else all_flood_events
+        )
+        if ecod_aggregate_path is not None:
+            self._write_ecod_aggregate_debug(
+                metric_profile=metric_profile,
+                ecod_aggregate_path=ecod_aggregate_path,
+                aggregate_metric_name=aggregate_metric_name,
+                timestamps=timestamps,
+                raw_scores=raw_scores,
+                smoothed_scores=smoothed_scores,
+                all_flood_events=all_flood_events,
+                selected_flood_events=selected_flood_events,
+                smooth_window=smooth_window,
+                gamma=gamma,
+                ranking=ranking,
+                max_proposals=max_proposals,
+            )
+        flood_events = selected_flood_events
 
         proposals: list[KeyEventProposal] = []
         for rank, flood_event in enumerate(flood_events, start=1):
@@ -137,7 +182,7 @@ class MetricEventSelector:
                 },
                 severity="surprise",
                 reason=(
-                    "Persistent peak in aggregate ECOD surprise landscape "
+                    "Peak in aggregate ECOD surprise landscape "
                     f"at {flood_event.peak_sec:.3f}s"
                 ),
             )
@@ -159,7 +204,8 @@ class MetricEventSelector:
                     source=EventProposalSource.METRIC_TRIGGER,
                     trigger_reason=(
                         f"aggregate surprise flood peak at {flood_event.peak_sec:.3f}s "
-                        f"with area {flood_event.area_above_base:.3f} and "
+                        f"with height {flood_event.peak_score:.3f}, "
+                        f"area {flood_event.area_above_base:.3f}, and "
                         f"persistence {flood_event.persistence:.3f}"
                     ),
                     candidate_frames=candidate_frames,
@@ -169,7 +215,7 @@ class MetricEventSelector:
                         "timeline_rank": rank,
                         "selector_mode": "surprise_flood",
                         "proposal_score": flood_event.rank_score,
-                        "rank_score_type": "area_above_base",
+                        "rank_score_type": flood_event.rank_score_type,
                         "aggregate_metric_name": aggregate_metric_name,
                         "peak_index": flood_event.peak_index,
                         "peak_sec": flood_event.peak_sec,
@@ -248,6 +294,7 @@ class MetricEventSelector:
                     "event_id": proposal.event_id,
                     "time_window": _time_window_to_dict(proposal.time_window),
                     "proposal_score": proposal.metadata.get("proposal_score"),
+                    "rank_score_type": proposal.metadata.get("rank_score_type"),
                     "peak_sec": proposal.metadata.get("peak_sec"),
                     "peak_score": proposal.metadata.get("peak_score"),
                     "base_score": proposal.metadata.get("base_score"),
@@ -263,6 +310,299 @@ class MetricEventSelector:
             ],
         }
         debug_timeline_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _write_ecod_aggregate_debug_unavailable(
+        self,
+        metric_profile: MetricProfile,
+        ecod_aggregate_path: Path,
+        aggregate_metric_name: str,
+        reason: str,
+        timestamps: list[float] | None = None,
+        raw_scores: list[float] | None = None,
+    ) -> None:
+        paths = ecod_aggregate_output_paths(ecod_aggregate_path)
+        paths["data"].parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "bundle_id": metric_profile.bundle_id,
+            "aggregate_metric_name": aggregate_metric_name,
+            "available": False,
+            "reason": reason,
+            "timestamps_sec": timestamps or [],
+            "raw_scores": raw_scores or [],
+            "smoothed_scores": [],
+            "source_metric_series": {},
+            "local_maxima": [],
+            "selected_local_maxima": [],
+            "plot_paths": {
+                "raw": str(paths["raw_plot"]),
+                "smoothed": str(paths["smoothed_plot"]),
+            },
+        }
+        paths["data"].write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _write_ecod_aggregate_debug(
+        self,
+        metric_profile: MetricProfile,
+        ecod_aggregate_path: Path,
+        aggregate_metric_name: str,
+        timestamps: list[float],
+        raw_scores: list[float],
+        smoothed_scores: list[float],
+        all_flood_events: list[SurpriseFloodEvent],
+        selected_flood_events: list[SurpriseFloodEvent],
+        smooth_window: int,
+        gamma: float,
+        ranking: str,
+        max_proposals: int,
+    ) -> None:
+        paths = ecod_aggregate_output_paths(ecod_aggregate_path)
+        paths["data"].parent.mkdir(parents=True, exist_ok=True)
+        selected_indices = {event.peak_index for event in selected_flood_events}
+        local_maxima = [
+            {
+                **_surprise_flood_event_to_dict(event),
+                "selected": event.peak_index in selected_indices,
+            }
+            for event in all_flood_events
+        ]
+        payload = {
+            "bundle_id": metric_profile.bundle_id,
+            "aggregate_metric_name": aggregate_metric_name,
+            "available": True,
+            "smoothing": {
+                "method": "centered_savgol_filter",
+                "window_length": max(1, int(smooth_window)),
+                "gamma": gamma,
+            },
+            "max_proposals": max_proposals,
+            "ranking": ranking,
+            "timestamps_sec": timestamps,
+            "raw_scores": raw_scores,
+            "smoothed_scores": smoothed_scores,
+            "source_metric_series": _source_metric_series(
+                metric_profile=metric_profile,
+                aggregate_metric_name=aggregate_metric_name,
+            ),
+            "local_maxima": local_maxima,
+            "selected_local_maxima": [
+                _surprise_flood_event_to_dict(event)
+                for event in selected_flood_events
+            ],
+            "local_maxima_count": len(all_flood_events),
+            "selected_local_maxima_count": len(selected_flood_events),
+            "plot_paths": {
+                "raw": str(paths["raw_plot"]),
+                "smoothed": str(paths["smoothed_plot"]),
+            },
+        }
+        plot_error = _write_ecod_aggregate_plots(
+            raw_plot_path=paths["raw_plot"],
+            smoothed_plot_path=paths["smoothed_plot"],
+            bundle_id=metric_profile.bundle_id,
+            timestamps=timestamps,
+            raw_scores=raw_scores,
+            smoothed_scores=smoothed_scores,
+            local_maxima=all_flood_events,
+            selected_local_maxima=selected_flood_events,
+        )
+        if plot_error is not None:
+            payload["plot_error"] = plot_error
+        paths["data"].write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _source_metric_series(
+    *,
+    metric_profile: MetricProfile,
+    aggregate_metric_name: str,
+) -> dict[str, dict[str, Any]]:
+    metric_lookup = {metric.name: metric for metric in metric_profile.metrics}
+    aggregate_metric = metric_lookup.get(aggregate_metric_name)
+    if aggregate_metric is None:
+        return {}
+    source_metric_names = aggregate_metric.metadata.get("source_metric_names")
+    if not isinstance(source_metric_names, list):
+        return {}
+
+    series: dict[str, dict[str, Any]] = {}
+    for metric_name in source_metric_names:
+        if not isinstance(metric_name, str):
+            continue
+        metric = metric_lookup.get(metric_name)
+        if metric is None:
+            continue
+        timestamps: list[float] = []
+        values: list[float] = []
+        for sample in metric.samples:
+            if not isinstance(sample.value, (int, float, bool)):
+                continue
+            timestamps.append(float(sample.timestamp_sec))
+            values.append(float(sample.value))
+        if not timestamps:
+            continue
+        series[metric_name] = {
+            "timestamps_sec": timestamps,
+            "raw_values": values,
+            "unit": metric.unit,
+            "description": metric.description,
+        }
+    return series
+
+
+def ecod_aggregate_output_paths(path: Path) -> dict[str, Path]:
+    if path.suffix:
+        base = path.with_suffix("")
+        data_path = path if path.suffix.lower() == ".json" else base.with_suffix(".json")
+    else:
+        base = path
+        data_path = base.with_suffix(".json")
+    return {
+        "data": data_path,
+        "raw_plot": base.with_name(f"{base.name}_raw.png"),
+        "smoothed_plot": base.with_name(f"{base.name}_smoothed.png"),
+    }
+
+
+def _surprise_flood_event_to_dict(event: SurpriseFloodEvent) -> dict[str, Any]:
+    return {
+        "peak_index": event.peak_index,
+        "peak_sec": event.peak_sec,
+        "start_sec": event.start_sec,
+        "end_sec": event.end_sec,
+        "peak_score": event.peak_score,
+        "base_score": event.base_score,
+        "persistence": event.persistence,
+        "contour_score": event.contour_score,
+        "width_sec": event.width_sec,
+        "area_above_base": event.area_above_base,
+        "rank_score": event.rank_score,
+        "rank_score_type": event.rank_score_type,
+        "death_index": event.death_index,
+        "merge_sec": event.merge_sec,
+        "is_global_peak": event.is_global_peak,
+    }
+
+
+def _write_ecod_aggregate_plots(
+    raw_plot_path: Path,
+    smoothed_plot_path: Path,
+    bundle_id: str,
+    timestamps: list[float],
+    raw_scores: list[float],
+    smoothed_scores: list[float],
+    local_maxima: list[SurpriseFloodEvent],
+    selected_local_maxima: list[SurpriseFloodEvent],
+) -> str | None:
+    try:
+        os.environ.setdefault("MPLCONFIGDIR", "/tmp/pathologist_matplotlib")
+        os.environ.setdefault("XDG_CACHE_HOME", "/tmp/pathologist_cache")
+        Path(os.environ["MPLCONFIGDIR"]).mkdir(parents=True, exist_ok=True)
+        Path(os.environ["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+    raw_plot_path.parent.mkdir(parents=True, exist_ok=True)
+    smoothed_plot_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _plot_ecod_raw_scores(
+            plt=plt,
+            plot_path=raw_plot_path,
+            bundle_id=bundle_id,
+            timestamps=timestamps,
+            raw_scores=raw_scores,
+        )
+        _plot_ecod_smoothed_scores(
+            plt=plt,
+            plot_path=smoothed_plot_path,
+            bundle_id=bundle_id,
+            timestamps=timestamps,
+            raw_scores=raw_scores,
+            smoothed_scores=smoothed_scores,
+            local_maxima=local_maxima,
+            selected_local_maxima=selected_local_maxima,
+        )
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def _plot_ecod_raw_scores(
+    plt: Any,
+    plot_path: Path,
+    bundle_id: str,
+    timestamps: list[float],
+    raw_scores: list[float],
+) -> None:
+    figure, axis = plt.subplots(figsize=(11, 4))
+    axis.plot(timestamps, raw_scores, color="#111111", linewidth=1.2, label="raw_ecod_aggregate")
+    axis.scatter(timestamps, raw_scores, color="#111111", s=9, alpha=0.6)
+    axis.set_xlabel("timestamp_sec")
+    axis.set_ylabel("Aggregate ECOD score")
+    axis.grid(True, alpha=0.25)
+    axis.legend(loc="best")
+    figure.suptitle(f"{bundle_id}: raw ECOD aggregate score")
+    figure.tight_layout()
+    figure.savefig(plot_path, dpi=160)
+    plt.close(figure)
+
+
+def _plot_ecod_smoothed_scores(
+    plt: Any,
+    plot_path: Path,
+    bundle_id: str,
+    timestamps: list[float],
+    raw_scores: list[float],
+    smoothed_scores: list[float],
+    local_maxima: list[SurpriseFloodEvent],
+    selected_local_maxima: list[SurpriseFloodEvent],
+) -> None:
+    selected_indices = {event.peak_index for event in selected_local_maxima}
+    unselected_maxima = [event for event in local_maxima if event.peak_index not in selected_indices]
+
+    figure, axis = plt.subplots(figsize=(11, 4))
+    axis.plot(timestamps, raw_scores, color="#9a9a9a", linewidth=0.8, alpha=0.45, label="raw")
+    axis.plot(timestamps, smoothed_scores, color="#111111", linewidth=1.4, label="smoothed")
+    if unselected_maxima:
+        axis.scatter(
+            [event.peak_sec for event in unselected_maxima],
+            [event.peak_score for event in unselected_maxima],
+            color="#1f77b4",
+            s=28,
+            alpha=0.8,
+            label="local maxima",
+            zorder=4,
+        )
+    if selected_local_maxima:
+        axis.scatter(
+            [event.peak_sec for event in selected_local_maxima],
+            [event.peak_score for event in selected_local_maxima],
+            color="#d62728",
+            marker="*",
+            s=90,
+            alpha=0.95,
+            label="selected top-K",
+            zorder=5,
+        )
+        for rank, event in enumerate(selected_local_maxima, start=1):
+            axis.annotate(
+                str(rank),
+                xy=(event.peak_sec, event.peak_score),
+                xytext=(3, 5),
+                textcoords="offset points",
+                fontsize=8,
+                color="#d62728",
+            )
+    axis.set_xlabel("timestamp_sec")
+    axis.set_ylabel("Aggregate ECOD score")
+    axis.grid(True, alpha=0.25)
+    axis.legend(loc="best")
+    figure.suptitle(f"{bundle_id}: smoothed ECOD aggregate with local maxima")
+    figure.tight_layout()
+    figure.savefig(plot_path, dpi=160)
+    plt.close(figure)
 
 
 def _local_metric_context(
@@ -506,8 +846,6 @@ def _extract_surprise_flood_events(
         base_score = float(death["death_level"]) if death is not None else float(global_base)
         peak_score = float(scores[peak_index])
         persistence = max(0.0, peak_score - base_score)
-        if persistence <= 0:
-            continue
         contour_score = base_score + gamma * persistence
         start_sec, end_sec = _contour_window(
             timestamps=timestamps,
@@ -546,6 +884,54 @@ def _extract_surprise_flood_events(
         events,
         key=lambda event: (
             -event.rank_score,
+            -event.persistence,
+            -event.peak_score,
+            event.peak_sec,
+        ),
+    )
+
+
+def _resolve_surprise_flood_ranking(value: Any) -> str:
+    aliases = {
+        "area": "area",
+        "area_above_base": "area",
+        "persistence": "persistence",
+    }
+    ranking = aliases.get(str(value).strip().lower())
+    if ranking is None:
+        raise ValueError(
+            "selector.surprise_flood.ranking must be 'area' or 'persistence'."
+        )
+    return ranking
+
+
+def _rank_surprise_flood_events(
+    events: list[SurpriseFloodEvent],
+    *,
+    ranking: str,
+) -> list[SurpriseFloodEvent]:
+    resolved_ranking = _resolve_surprise_flood_ranking(ranking)
+    for event in events:
+        if resolved_ranking == "persistence":
+            event.rank_score = event.persistence
+            event.rank_score_type = "persistence"
+        else:
+            event.rank_score = event.area_above_base
+            event.rank_score_type = "area_above_base"
+    if resolved_ranking == "persistence":
+        return sorted(
+            events,
+            key=lambda event: (
+                -event.persistence,
+                -event.area_above_base,
+                -event.peak_score,
+                event.peak_sec,
+            ),
+        )
+    return sorted(
+        events,
+        key=lambda event: (
+            -event.area_above_base,
             -event.persistence,
             -event.peak_score,
             event.peak_sec,

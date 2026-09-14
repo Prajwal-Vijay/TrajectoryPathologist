@@ -95,13 +95,92 @@ def test_metric_engine_computes_default_profile() -> None:
     assert "timestamp_regularity" in metric_names
     assert "action_range_saturation" in metric_names
     assert "action_discontinuity" in metric_names
+    assert "audio_spectral_flux" in metric_names
     assert "action_distribution_entropy" in metric_names
     assert "joint_path_length" in metric_names
     assert "end_effector_cartesian_path_length" in metric_names
     assert "motion_smoothness" in metric_names
     assert "velocity_spike" in metric_names
     assert "stalling" in metric_names
+    assert "eef_linear_velocity_spike" in metric_names
+    assert "eef_angular_velocity_spike" in metric_names
+    assert "eef_translational_stalling" in metric_names
+    assert "eef_rotational_stalling" in metric_names
+    assert "eef_translational_jerk" in metric_names
+    assert "eef_angular_jerk" in metric_names
+    assert "force_norm" in metric_names
     assert "visual_flow" in metric_names
+    assert "gripper_aperture_speed" in metric_names
     assert "gripper_transition" in metric_names
     assert "gripper_chatter" in metric_names
     assert profile.bundle_id == "synthetic"
+
+
+def test_metric_engine_maxes_bimanual_components_after_ecod() -> None:
+    timestamps = [index * 0.1 for index in range(8)]
+    vector_groups = {"left": [0], "right": [1]}
+    bundle = TrajectoryBundle(
+        bundle_id="bimanual",
+        source_format=BundleFormat.CUSTOM,
+        streams=[
+            ModalityStream(
+                name="action",
+                modality=Modality.ACTION,
+                timestamps_sec=timestamps,
+                records=[
+                    {"action": [float(index), float(index**2)]}
+                    for index in range(8)
+                ],
+                metadata={"vector_groups": vector_groups},
+            ),
+            ModalityStream(
+                name="proprioception",
+                modality=Modality.PROPRIOCEPTION,
+                timestamps_sec=timestamps,
+                records=[
+                    {"proprioception": [float(index**2), float(index**3)]}
+                    for index in range(8)
+                ],
+                metadata={"vector_groups": vector_groups},
+            ),
+            ModalityStream(
+                name="velocity",
+                modality=Modality.PROPRIOCEPTION,
+                timestamps_sec=timestamps,
+                records=[
+                    {"qvel": [float(index), float(7 - index)]}
+                    for index in range(8)
+                ],
+                metadata={"vector_groups": vector_groups},
+            ),
+            ModalityStream(
+                name="gripper",
+                modality=Modality.GRIPPER,
+                timestamps_sec=timestamps,
+                records=[
+                    {"gripper": [float(index % 2), float((index + 1) % 2)]}
+                    for index in range(8)
+                ],
+                metadata={"vector_groups": vector_groups},
+            ),
+        ],
+    )
+    source_metrics = [
+        "action_discontinuity",
+        "motion_smoothness",
+        "velocity_spike",
+        "stalling",
+    ]
+
+    profile = MetricEngine(
+        config={"surprise": {"source_metrics": source_metrics}}
+    ).compute(bundle)
+
+    score_by_name = {metric.name: metric for metric in profile.metrics}
+    for source_name in source_metrics:
+        assert score_by_name[f"{source_name}_ecod_score"].metadata[
+            "component_names"
+        ] == ["left", "right"]
+    aggregate = score_by_name["ecod_aggregate_score"]
+    assert set(aggregate.metadata["grouped_feature_names"]) == set(source_metrics)
+    assert aggregate.metadata["grouped_feature_reduction"] == "per_tail_max_after_ecod"

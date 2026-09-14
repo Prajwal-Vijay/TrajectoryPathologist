@@ -78,10 +78,16 @@ def test_ecod_surprise_scorer_appends_score_metrics_with_aligned_timestamps() ->
 
     aggregate_metric = next(metric for metric in scored_profile.metrics if metric.name == "ecod_aggregate_score")
     assert [sample.timestamp_sec for sample in aggregate_metric.samples] == [0.0, 0.1, 0.2]
-    assert aggregate_metric.metadata["score_formula"] == "O_i=max(sum_j U_l_ij, sum_j U_r_ij, sum_j U_skew_ij)"
+    assert aggregate_metric.metadata["score_formula"] == (
+        "O_i=max(sum_j U_l_ij, sum_j U_r_ij, sum_j U_skew_ij)"
+    )
     assert aggregate_metric.metadata["feature_raw_skewness_sign"]["stalling"] == 1
     assert aggregate_metric.metadata["feature_skewness_sign"]["stalling"] == -1
     assert aggregate_metric.metadata["feature_skewness_sign_overrides"]["stalling"] == -1
+    assert aggregate_metric.metadata["feature_score_tail_modes"]["stalling"] == "left"
+    stalling_left_scores = aggregate_metric.metadata["feature_left_tail_scores"]["stalling"]
+    assert aggregate_metric.metadata["feature_right_tail_scores"]["stalling"] == stalling_left_scores
+    assert aggregate_metric.metadata["feature_skew_tail_scores"]["stalling"] == stalling_left_scores
     expected_scores = [
         max(
             aggregate_metric.metadata["aggregate_left_tail_scores"][index],
@@ -91,6 +97,116 @@ def test_ecod_surprise_scorer_appends_score_metrics_with_aligned_timestamps() ->
         for index in range(3)
     ]
     assert [sample.value for sample in aggregate_metric.samples] == expected_scores
+
+
+def test_ecod_surprise_maxes_group_scores_instead_of_combining_raw_vectors() -> None:
+    timestamps = [0.0, 0.1, 0.2, 0.3]
+    grouped_metric = MetricResult(
+        name="action_discontinuity",
+        description="Grouped source metric",
+        samples=[
+            MetricSample(timestamp_sec=timestamp, value=value)
+            for timestamp, value in zip(timestamps, [0.0, 10.0, 10.0, 0.0])
+        ],
+        metadata={
+            "ecod_component_values": {
+                "left": [0.0, 10.0, 0.0, 0.0],
+                "right": [0.0, 0.0, 10.0, 0.0],
+            }
+        },
+    )
+    visual_metric = MetricResult(
+        name="visual_flow",
+        description="Scalar source metric",
+        samples=[
+            MetricSample(timestamp_sec=timestamp, value=value)
+            for timestamp, value in zip(timestamps, [1.0, 2.0, 3.0, 4.0])
+        ],
+    )
+    scorer = ECODSurpriseScorer(
+        config={
+            "surprise": {
+                "enabled": True,
+                "source_metrics": ["action_discontinuity", "visual_flow"],
+            }
+        }
+    )
+
+    scored_profile = scorer.append_to_profile(
+        MetricProfile(bundle_id="grouped", metrics=[grouped_metric, visual_metric])
+    )
+
+    left_scores = ecod_scores([0.0, 10.0, 0.0, 0.0])
+    right_scores = ecod_scores([0.0, 0.0, 10.0, 0.0])
+    expected = [
+        max(left_scores.outlier_scores[index], right_scores.outlier_scores[index])
+        for index in range(len(timestamps))
+    ]
+    action_score = next(
+        metric
+        for metric in scored_profile.metrics
+        if metric.name == "action_discontinuity_ecod_score"
+    )
+    assert [sample.value for sample in action_score.samples] == expected
+    assert action_score.metadata["component_names"] == ["left", "right"]
+    assert action_score.metadata["component_reduction"] == "per_tail_max_after_ecod"
+
+    aggregate = next(
+        metric
+        for metric in scored_profile.metrics
+        if metric.name == "ecod_aggregate_score"
+    )
+    assert aggregate.metadata["grouped_feature_names"] == {
+        "action_discontinuity": ["left", "right"]
+    }
+    assert aggregate.metadata["grouped_feature_reduction"] == "per_tail_max_after_ecod"
+    expected_left_tail = [
+        max(left_scores.left_tail_scores[index], right_scores.left_tail_scores[index])
+        for index in range(len(timestamps))
+    ]
+    assert (
+        aggregate.metadata["feature_left_tail_scores"]["action_discontinuity"]
+        == expected_left_tail
+    )
+
+
+def test_eef_metrics_only_override_stalling_tail_direction() -> None:
+    metric_names = [
+        "eef_linear_velocity_spike",
+        "eef_angular_velocity_spike",
+        "eef_translational_stalling",
+        "eef_rotational_stalling",
+        "eef_translational_jerk",
+        "eef_angular_jerk",
+    ]
+    scorer = ECODSurpriseScorer(
+        config={"surprise": {"source_metrics": metric_names}}
+    )
+
+    scored = scorer.append_to_profile(
+        MetricProfile(
+            bundle_id="eef-tail-modes",
+            metrics=[_metric(name) for name in metric_names],
+        )
+    )
+    score_by_name = {metric.name: metric for metric in scored.metrics}
+
+    for metric_name in (
+        "eef_linear_velocity_spike",
+        "eef_angular_velocity_spike",
+        "eef_translational_jerk",
+        "eef_angular_jerk",
+    ):
+        assert score_by_name[f"{metric_name}_ecod_score"].metadata[
+            "score_tail_mode"
+        ] == "auto"
+    for metric_name in (
+        "eef_translational_stalling",
+        "eef_rotational_stalling",
+    ):
+        assert score_by_name[f"{metric_name}_ecod_score"].metadata[
+            "score_tail_mode"
+        ] == "left"
 
 
 def _metric(name: str) -> MetricResult:

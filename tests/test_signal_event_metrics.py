@@ -4,8 +4,36 @@ from __future__ import annotations
 
 from pathologist.metrics.base import MetricComputationContext
 from pathologist.metrics.kinematics import VelocitySpikeMetric
-from pathologist.metrics.signals import ActionDiscontinuityMetric
+from pathologist.metrics.signals import ActionDiscontinuityMetric, ForceNormMetric
 from pathologist.schemas import BundleFormat, Modality, ModalityStream, TrajectoryBundle
+
+
+def test_force_norm_uses_compensated_base_force_samples() -> None:
+    bundle = TrajectoryBundle(
+        bundle_id="compensated-force",
+        source_format=BundleFormat.CUSTOM,
+        streams=[
+            ModalityStream(
+                name="compensated_base_force",
+                modality=Modality.FORCE,
+                timestamps_sec=[0.0, 0.1, 0.2],
+                records=[
+                    {"compensated_base_force": [3.0, 4.0, 0.0]},
+                    {"compensated_base_force": [0.0, 0.0, 2.0]},
+                    {"compensated_base_force": [1.0, 2.0, 2.0]},
+                ],
+                metadata={"coordinate_frame": "robot_base"},
+            )
+        ],
+    )
+
+    result = ForceNormMetric().compute(MetricComputationContext(bundle=bundle))
+
+    assert result.metadata["available"] is True
+    assert result.metadata["source_signal"] == "compensated_base_force"
+    assert result.unit == "N"
+    assert [sample.timestamp_sec for sample in result.samples] == [0.0, 0.1, 0.2]
+    assert [sample.value for sample in result.samples] == [5.0, 2.0, 3.0]
 
 
 def test_action_discontinuity_records_command_delta_samples_without_bounds() -> None:
@@ -38,6 +66,38 @@ def test_action_discontinuity_records_command_delta_samples_without_bounds() -> 
     assert not result.thresholds
     assert [sample.timestamp_sec for sample in result.samples] == timestamps[1:]
     assert max(sample.value for sample in result.samples) > 4.0
+
+
+def test_action_discontinuity_preserves_vector_groups_for_ecod() -> None:
+    timestamps = [0.0, 0.1, 0.2]
+    bundle = TrajectoryBundle(
+        bundle_id="grouped-action",
+        source_format=BundleFormat.CUSTOM,
+        streams=[
+            ModalityStream(
+                name="action",
+                modality=Modality.ACTION,
+                timestamps_sec=timestamps,
+                records=[
+                    {"action": [0.0, 0.0]},
+                    {"action": [3.0, 4.0]},
+                    {"action": [3.0, 9.0]},
+                ],
+                metadata={"vector_groups": {"arm_a": [0], "arm_b": [1]}},
+            )
+        ],
+    )
+
+    result = ActionDiscontinuityMetric().compute(
+        MetricComputationContext(bundle=bundle)
+    )
+
+    assert [sample.value for sample in result.samples] == [5.0, 5.0]
+    assert result.metadata["ecod_component_values"] == {
+        "arm_a": [3.0, 0.0],
+        "arm_b": [4.0, 5.0],
+    }
+    assert result.metadata["ecod_component_reduction"] == "max_after_ecod"
 
 
 def test_action_discontinuity_can_ignore_gripper_dimensions() -> None:

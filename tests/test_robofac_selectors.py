@@ -6,7 +6,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from pathologist.qa import robofac_selectors
-from pathologist.qa.robofac_selectors import _representative_frame_for_proposal, select_kite_flow_keyframes
+from pathologist.qa.robofac_selectors import (
+    _representative_frame_for_proposal,
+    _top_peaks,
+    select_kite_flow_keyframes,
+    select_metric_keyframes,
+)
 from pathologist.schemas import CameraFrameRef, TimeWindow
 
 
@@ -80,6 +85,8 @@ def test_kite_flow_selector_uses_stride_and_fixed_sample_nms(monkeypatch) -> Non
         def mean(self) -> float:
             return self.score
 
+    resize_calls: list[tuple[int, int]] = []
+
     class FakeCV2:
         COLOR_BGR2GRAY = 0
 
@@ -88,7 +95,8 @@ def test_kite_flow_selector_uses_stride_and_fixed_sample_nms(monkeypatch) -> Non
             return int(Path(path).stem.split("_")[-1])
 
         @staticmethod
-        def resize(image: int, _size: tuple[int, int]) -> int:
+        def resize(image: int, size: tuple[int, int]) -> int:
+            resize_calls.append(size)
             return image
 
         @staticmethod
@@ -112,3 +120,68 @@ def test_kite_flow_selector_uses_stride_and_fixed_sample_nms(monkeypatch) -> Non
     )
 
     assert [frame.frame_index for frame in selected] == [2, 14]
+    assert set(resize_calls) == {(128, 128)}
+
+    padding_stats = {}
+    selected_with_padding = select_kite_flow_keyframes(
+        frames,
+        frame_budget=5,
+        config={"robofac_qa": {"kite_flow": {"frame_stride": 2, "nms_radius": 5}}},
+        selection_stats=padding_stats,
+        pad_to_budget=True,
+    )
+
+    assert [frame.frame_index for frame in selected_with_padding] == [0, 2, 9, 14, 19]
+    assert padding_stats["method_frame_count"] == 2
+    assert padding_stats["uniform_padded_frame_count"] == 3
+    assert padding_stats["unfilled_frame_count"] == 0
+
+    selected_without_padding = select_kite_flow_keyframes(
+        frames,
+        frame_budget=5,
+        config={"robofac_qa": {"kite_flow": {"frame_stride": 2, "nms_radius": 5}}},
+    )
+    assert [frame.frame_index for frame in selected_without_padding] == [2, 14]
+
+
+def test_kite_motion_nms_keeps_zero_motion_candidates_like_official_code() -> None:
+    assert _top_peaks([0.0] * 7, count=2, suppression_radius=5) == [0, 6]
+
+
+def test_metric_padding_divides_trajectory_by_remaining_budget(monkeypatch) -> None:
+    frames = [
+        CameraFrameRef("rgb", index / 10.0, Path(f"/tmp/frame_{index}.jpg"), frame_index=index)
+        for index in range(20)
+    ]
+    proposals = [
+        SimpleNamespace(
+            candidate_frames=[frames[index]],
+            time_window=TimeWindow(frames[index].timestamp_sec, frames[index].timestamp_sec),
+            metadata={"peak_sec": frames[index].timestamp_sec},
+            metric_events=[],
+        )
+        for index in (5, 10, 15)
+    ]
+
+    class FakeMetricEventSelector:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def select(self, *_args, **_kwargs):
+            return proposals
+
+    monkeypatch.setattr(robofac_selectors, "MetricEventSelector", FakeMetricEventSelector)
+    stats = {}
+
+    selected = select_metric_keyframes(
+        SimpleNamespace(camera_frames=frames),
+        metric_profile=object(),
+        frame_budget=6,
+        config={},
+        selection_stats=stats,
+    )
+
+    assert [frame.frame_index for frame in selected] == [0, 5, 9, 10, 15, 19]
+    assert stats["metric_frame_count"] == 3
+    assert stats["uniform_padded_frame_count"] == 3
+    assert stats["unfilled_frame_count"] == 0

@@ -9,9 +9,11 @@ from pathologist.metrics.helpers import (
     align_timestamps,
     extract_vector_series,
     find_stream,
+    grouped_l2_norms,
     l2_norm,
     summarize,
     vector_diff,
+    vector_group_indices,
 )
 from pathologist.schemas.common import (
     Modality,
@@ -24,6 +26,62 @@ from pathologist.schemas.common import (
     TimeWindow,
 )
 from pathologist.schemas.metrics import MetricEvent, MetricResult, MetricSample
+
+
+class ForceNormMetric:
+    """Euclidean norm of compensated force expressed in the robot base frame."""
+
+    name = "force_norm"
+
+    def compute(self, context: MetricComputationContext) -> MetricResult:
+        stream = find_stream(
+            context.bundle,
+            [Modality.FORCE],
+            preferred_names=["compensated_base_force"],
+        )
+        timestamps, forces = extract_vector_series(
+            stream,
+            ["compensated_base_force", "force"],
+        )
+        samples = [
+            MetricSample(timestamp_sec=timestamp, value=l2_norm(force[:3]))
+            for timestamp, force in zip(timestamps, forces)
+            if len(force) >= 3
+        ]
+        if stream is None or len(samples) < 2:
+            return MetricResult(
+                name=self.name,
+                description="Compensated base-frame force magnitude over time.",
+                source_modalities=[Modality.FORCE],
+                metadata={
+                    "available": False,
+                    "unavailable_reason": (
+                        "requires at least two 3-axis compensated_base_force samples"
+                    ),
+                },
+            )
+
+        force_norms = [float(sample.value) for sample in samples]
+        return MetricResult(
+            name=self.name,
+            description=(
+                "Euclidean norm of compensated force expressed in the robot base frame, "
+                "used as a scalar source for trajectory-relative ECDF surprise scoring."
+            ),
+            source_modalities=[Modality.FORCE],
+            unit="N",
+            samples=samples,
+            summary=summarize(force_norms),
+            thresholds=[],
+            events=[],
+            display_hint="force_norm_timeseries",
+            metadata={
+                "available": True,
+                "stream_name": stream.name,
+                "source_signal": "compensated_base_force",
+                "coordinate_frame": stream.metadata.get("coordinate_frame", "robot_base"),
+            },
+        )
 
 
 class ActionRangeSaturationMetric:
@@ -267,6 +325,18 @@ class ActionDiscontinuityMetric:
             if dimension not in ignored_dimensions
         ]
         ignored_dimension_set = set(ignored_dimensions)
+        vector_groups = {
+            name: [
+                dimension
+                for dimension in dimensions
+                if dimension not in ignored_dimension_set
+            ]
+            for name, dimensions in vector_group_indices(stream, action_width).items()
+        }
+        vector_groups = {
+            name: dimensions for name, dimensions in vector_groups.items() if dimensions
+        }
+        component_deltas = {name: [] for name in vector_groups}
         source_gripper_indices_removed = _int_list(
             stream.metadata.get(
                 "source_gripper_indices_removed",
@@ -291,6 +361,9 @@ class ActionDiscontinuityMetric:
             ]
             abs_delta_vector = [abs(value) for value in included_deltas]
             deltas.append(l2_norm(included_deltas))
+            grouped_deltas = grouped_l2_norms(delta_vector, vector_groups)
+            for name, value in grouped_deltas.items():
+                component_deltas[name].append(value)
             if abs_delta_vector:
                 max_delta = max(abs_delta_vector)
                 max_delta_index = abs_delta_vector.index(max_delta)
@@ -324,6 +397,10 @@ class ActionDiscontinuityMetric:
                 "source_gripper_indices_removed": source_gripper_indices_removed,
                 "metric_action_width": action_width,
                 "raw_action_width": stream.metadata.get("raw_action_width"),
+                "ecod_component_values": component_deltas if len(component_deltas) > 1 else {},
+                "ecod_component_reduction": (
+                    "max_after_ecod" if len(component_deltas) > 1 else None
+                ),
             },
         )
 

@@ -9,15 +9,43 @@ import pytest
 
 from pathologist.adapters.reassemble_bundle import ReassembleBundleAdapter
 from pathologist.reassemble.evaluation import (
+    _configured_metric_ranking,
     _empty_stats_bucket,
     _evaluation_row,
     _failed_high_level_demo_bundles,
     _finalize_stats,
     _high_level_task_kind,
+    _set_metric_ranking,
+    _set_visual_flow_camera_names,
     _update_stats,
 )
+from pathologist.run_reassemble_eval_pipeline import build_arg_parser
 from pathologist.schemas import BundleFormat, EventProposalSource, TimeWindow
 from pathologist.schemas.key_event import KeyEventProposal
+
+
+def test_reassemble_cli_accepts_persistence_metric_ranking() -> None:
+    args = build_arg_parser().parse_args(
+        [
+            "--data-root",
+            "REASSEMBLE",
+            "--metric-ranking",
+            "persistence",
+            "--frame-cache-dir",
+            "shared_frames",
+        ]
+    )
+
+    assert args.metric_ranking == "persistence"
+    assert args.frame_cache_dir == "shared_frames"
+
+
+def test_reassemble_metric_ranking_updates_selector_config() -> None:
+    config = {"selector": {"surprise_flood": {"ranking": "area"}}}
+
+    _set_metric_ranking(config, "persistence")
+
+    assert _configured_metric_ranking(config) == "persistence"
 
 
 def test_reassemble_adapter_parses_failed_high_and_low_segments(tmp_path: Path) -> None:
@@ -45,9 +73,25 @@ def test_reassemble_adapter_parses_failed_high_and_low_segments(tmp_path: Path) 
     assert {stream.name for stream in bundle.streams} == {
         "proprioception",
         "velocity",
+        "eef_velocity",
         "gripper",
+        "compensated_base_force",
         "telemetry",
+        "hama1_audio",
     }
+    force_stream = next(stream for stream in bundle.streams if stream.name == "compensated_base_force")
+    assert force_stream.metadata["coordinate_frame"] == "robot_base"
+    assert force_stream.records is not None
+    assert force_stream.records[1]["compensated_base_force"] == [0.0, 3.0, 4.0]
+    audio_stream = next(stream for stream in bundle.streams if stream.name == "hama1_audio")
+    assert audio_stream.data_path is not None
+    assert audio_stream.data_path.read_bytes() == b"\xff\xf3\xc8\x64"
+    eef_velocity_stream = next(
+        stream for stream in bundle.streams if stream.name == "eef_velocity"
+    )
+    assert eef_velocity_stream.records is not None
+    assert eef_velocity_stream.records[0]["eef_linear_velocity"] == [1.0, 2.0, 3.0]
+    assert eef_velocity_stream.records[0]["eef_angular_velocity"] == [4.0, 5.0, 6.0]
 
 
 def test_reassemble_adapter_marks_successful_trajectories_as_skippable(tmp_path: Path) -> None:
@@ -161,6 +205,15 @@ def test_reassemble_stats_only_report_low_level_and_task_breakdown(tmp_path: Pat
     assert stats["metric"]["by_high_level_task"]["remove"]["trajectory_count"] == 1
 
 
+def test_reassemble_camera_choice_updates_visual_flow_config() -> None:
+    config = {"metrics": {"visual_flow": {"camera_names": ["hand"], "resize": [128, 128]}}}
+
+    _set_visual_flow_camera_names(config, ["hama1"])
+
+    assert config["metrics"]["visual_flow"]["camera_names"] == ["hama1"]
+    assert config["metrics"]["visual_flow"]["resize"] == [128, 128]
+
+
 def _proposal(event_id: str, peak_sec: float) -> KeyEventProposal:
     return KeyEventProposal(
         event_id=event_id,
@@ -175,20 +228,42 @@ def _write_reassemble_fixture(object_h5py: object, h5_path: Path, include_failur
     import numpy as np
 
     with object_h5py.File(h5_path, "w") as handle:
+        handle.create_dataset(
+            "hama1_audio",
+            data=np.array([255, 243, 200, 100], dtype=np.int64),
+        )
         robot_state = handle.create_group("robot_state")
         timestamps = handle.create_group("timestamps")
         base_times = np.array([100.0, 100.1, 100.2, 100.3, 100.4], dtype=float)
         robot_state.create_dataset("joint_positions", data=np.stack([np.arange(7) + i for i in range(5)]))
         robot_state.create_dataset("joint_velocities", data=np.ones((5, 7)))
+        robot_state.create_dataset(
+            "velocity",
+            data=np.tile(np.arange(1.0, 7.0), (5, 1)),
+        )
         robot_state.create_dataset("gripper_positions", data=np.zeros((5, 2)))
         robot_state.create_dataset("pose", data=np.stack([[i, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0] for i in range(5)]))
+        robot_state.create_dataset(
+            "compensated_base_force",
+            data=np.array(
+                [
+                    [0.0, 0.0, 0.0],
+                    [3.0, 4.0, 0.0],
+                    [0.0, 3.0, 4.0],
+                    [1.0, 2.0, 2.0],
+                    [0.0, 0.0, 6.0],
+                ]
+            ),
+        )
         robot_state.create_dataset("measured_force", data=np.zeros((5, 3)))
         robot_state.create_dataset("measured_torque", data=np.zeros((5, 3)))
         for name in (
             "joint_positions",
             "joint_velocities",
+            "velocity",
             "gripper_positions",
             "pose",
+            "compensated_base_force",
             "measured_force",
             "measured_torque",
         ):

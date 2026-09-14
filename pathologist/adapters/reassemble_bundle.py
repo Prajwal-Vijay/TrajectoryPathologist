@@ -16,6 +16,8 @@ from pathologist.schemas import (
     TrajectoryBundle,
 )
 
+REASSEMBLE_AUDIO_DATASETS = ("hama1_audio", "hama2_audio", "hand_audio")
+
 
 @dataclass(frozen=True, slots=True)
 class ReassembleSegment:
@@ -60,6 +62,7 @@ class ReassembleBundleAdapter:
         camera_names: Iterable[str] | None = None,
         include_event_camera: bool = False,
         extract_frames: bool = True,
+        frame_time_windows: Iterable[tuple[float, float]] | None = None,
     ) -> TrajectoryBundle:
         """Load a REASSEMBLE HDF5 file.
 
@@ -97,6 +100,8 @@ class ReassembleBundleAdapter:
                 h5_path=resolved_h5_path,
                 timestamp_origin=timestamp_origin,
                 robot_downsample_hz=robot_downsample_hz,
+                audio_cache_dir=cache_dir / "audio",
+                duration_sec=duration_sec,
             )
             camera_frames = (
                 self._materialize_camera_frames(
@@ -104,6 +109,7 @@ class ReassembleBundleAdapter:
                     frame_cache_dir=cache_dir,
                     timestamp_origin=timestamp_origin,
                     camera_names=requested_cameras,
+                    frame_time_windows=frame_time_windows,
                 )
                 if extract_frames
                 else []
@@ -151,15 +157,31 @@ class ReassembleBundleAdapter:
         frame_cache_dir: Path,
         timestamp_origin: float,
         camera_names: list[str],
+        frame_time_windows: Iterable[tuple[float, float]] | None = None,
     ) -> list[CameraFrameRef]:
         frames: list[CameraFrameRef] = []
+        windows = (
+            [(float(start), float(end)) for start, end in frame_time_windows]
+            if frame_time_windows is not None
+            else None
+        )
         for camera_name in camera_names:
             if camera_name not in handle or f"timestamps/{camera_name}" not in handle:
                 continue
             camera_dir = frame_cache_dir / "images" / camera_name
             timestamps = _normalized_timestamps(handle[f"timestamps/{camera_name}"], timestamp_origin)
+            selected_indices = _frame_indices_for_windows(timestamps, windows)
             cached_frames = _frames_from_image_dir(camera_dir, camera_name, timestamps)
-            if len(cached_frames) >= len(timestamps):
+            if selected_indices is not None:
+                cached_by_index = {
+                    frame.frame_index: frame
+                    for frame in cached_frames
+                    if frame.frame_index is not None
+                }
+                if all(index in cached_by_index for index in selected_indices):
+                    frames.extend(cached_by_index[index] for index in selected_indices)
+                    continue
+            elif len(cached_frames) >= len(timestamps):
                 frames.extend(cached_frames[: len(timestamps)])
                 continue
 
@@ -173,6 +195,7 @@ class ReassembleBundleAdapter:
                     frame_cache_dir=camera_dir,
                     camera_name=camera_name,
                     timestamps=timestamps,
+                    frame_indices=selected_indices,
                 )
             )
         frames.sort(key=lambda frame: (frame.timestamp_sec, frame.camera_name, frame.frame_index or -1))
@@ -184,6 +207,8 @@ def _build_streams(
     h5_path: Path,
     timestamp_origin: float,
     robot_downsample_hz: float,
+    audio_cache_dir: Path,
+    duration_sec: float | None,
 ) -> list[ModalityStream]:
     base_metadata = {
         "dataset": "REASSEMBLE",
@@ -240,6 +265,45 @@ def _build_streams(
             )
         )
 
+    eef_velocities = _read_robot_series(
+        handle,
+        "velocity",
+        timestamp_origin,
+        robot_downsample_hz,
+    )
+    if eef_velocities is not None:
+        timestamps, values = eef_velocities
+        records = [
+            {
+                "timestamp_sec": timestamp,
+                "sample_index": index,
+                "eef_velocity": value,
+                "eef_linear_velocity": value[:3],
+                "eef_angular_velocity": value[3:6],
+            }
+            for index, (timestamp, value) in enumerate(zip(timestamps, values))
+            if len(value) >= 6
+        ]
+        record_timestamps = [
+            float(record["timestamp_sec"])
+            for record in records
+        ]
+        if records:
+            streams.append(
+                ModalityStream(
+                    name="eef_velocity",
+                    modality=Modality.TELEMETRY,
+                    timestamps_sec=record_timestamps,
+                    records=records,
+                    metadata={
+                        **base_metadata,
+                        "source_dataset": "robot_state/velocity",
+                        "linear_components": ["vx", "vy", "vz"],
+                        "angular_components": ["wx", "wy", "wz"],
+                    },
+                )
+            )
+
     gripper_positions = _read_robot_series(handle, "gripper_positions", timestamp_origin, robot_downsample_hz)
     if gripper_positions is not None:
         timestamps, values = gripper_positions
@@ -262,6 +326,39 @@ def _build_streams(
                     **base_metadata,
                     "source_dataset": "robot_state/gripper_positions",
                     "gripper_binary_threshold": 0.5,
+                },
+            )
+        )
+
+    compensated_base_force = _read_robot_series(
+        handle,
+        "compensated_base_force",
+        timestamp_origin,
+        robot_downsample_hz,
+    )
+    if compensated_base_force is not None:
+        timestamps, values = compensated_base_force
+        records = [
+            {
+                "timestamp_sec": timestamp,
+                "sample_index": index,
+                "compensated_base_force": value,
+                "force": value,
+            }
+            for index, (timestamp, value) in enumerate(zip(timestamps, values))
+        ]
+        streams.append(
+            ModalityStream(
+                name="compensated_base_force",
+                modality=Modality.FORCE,
+                timestamps_sec=timestamps,
+                records=records,
+                metadata={
+                    **base_metadata,
+                    "source_dataset": "robot_state/compensated_base_force",
+                    "coordinate_frame": "robot_base",
+                    "compensated": True,
+                    "unit": "N",
                 },
             )
         )
@@ -312,6 +409,51 @@ def _build_streams(
                 timestamps_sec=[0.0],
                 records=[{"timestamp_sec": 0.0}],
                 metadata={**base_metadata, "force_torque_sources": force_metadata},
+            )
+        )
+    streams.extend(
+        _build_audio_streams(
+            handle,
+            audio_cache_dir=audio_cache_dir,
+            duration_sec=duration_sec,
+            base_metadata=base_metadata,
+        )
+    )
+    return streams
+
+
+def _build_audio_streams(
+    handle: Any,
+    *,
+    audio_cache_dir: Path,
+    duration_sec: float | None,
+    base_metadata: dict[str, Any],
+) -> list[ModalityStream]:
+    streams: list[ModalityStream] = []
+    recording_duration_sec = max(0.0, float(duration_sec or 0.0))
+    for dataset_name in REASSEMBLE_AUDIO_DATASETS:
+        if dataset_name not in handle:
+            continue
+        audio_cache_dir.mkdir(parents=True, exist_ok=True)
+        audio_path = audio_cache_dir / f"{dataset_name}.mp3"
+        if not audio_path.exists():
+            encoded_values = handle[dataset_name][()]
+            encoded_bytes = encoded_values.astype("uint8", copy=False).tobytes()
+            audio_path.write_bytes(encoded_bytes)
+        streams.append(
+            ModalityStream(
+                name=dataset_name,
+                modality=Modality.AUDIO,
+                timestamps_sec=[0.0, recording_duration_sec],
+                data_path=audio_path,
+                metadata={
+                    **base_metadata,
+                    "source_dataset": dataset_name,
+                    "microphone_name": dataset_name.removesuffix("_audio"),
+                    "encoding": "mp3",
+                    "audio_source_start_sec": 0.0,
+                    "audio_segment_duration_sec": recording_duration_sec,
+                },
             )
         )
     return streams
@@ -441,10 +583,11 @@ def _extract_video_frames(
     frame_cache_dir: Path,
     camera_name: str,
     timestamps: list[float],
+    frame_indices: list[int] | None = None,
 ) -> list[CameraFrameRef]:
     frame_cache_dir.mkdir(parents=True, exist_ok=True)
     cached_frames = _frames_from_image_dir(frame_cache_dir, camera_name, timestamps)
-    if len(cached_frames) >= len(timestamps):
+    if frame_indices is None and len(cached_frames) >= len(timestamps):
         return cached_frames[: len(timestamps)]
 
     cv2 = _import_cv2()
@@ -452,27 +595,63 @@ def _extract_video_frames(
     if not capture.isOpened():
         raise RuntimeError(f"Could not open REASSEMBLE video blob: {video_path}")
     refs: list[CameraFrameRef] = []
-    index = 0
-    while index < len(timestamps):
+    if frame_indices is None:
+        index = 0
+        while index < len(timestamps):
+            ok, frame = capture.read()
+            if not ok:
+                break
+            refs.append(
+                _write_frame_ref(
+                    frame=frame,
+                    frame_cache_dir=frame_cache_dir,
+                    camera_name=camera_name,
+                    timestamp=timestamps[index],
+                    frame_index=index,
+                )
+            )
+            index += 1
+        capture.release()
+        return refs
+
+    for index in frame_indices:
+        if index < 0 or index >= len(timestamps):
+            continue
+        capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
         ok, frame = capture.read()
         if not ok:
-            break
-        timestamp = timestamps[index]
-        image_path = frame_cache_dir / f"{index:06d}_t{timestamp:08.3f}.jpg"
-        if not image_path.exists() and not cv2.imwrite(str(image_path), frame):
-            capture.release()
-            raise RuntimeError(f"Could not write REASSEMBLE frame: {image_path}")
+            continue
         refs.append(
-            CameraFrameRef(
+            _write_frame_ref(
+                frame=frame,
+                frame_cache_dir=frame_cache_dir,
                 camera_name=camera_name,
-                timestamp_sec=timestamp,
-                image_path=image_path,
+                timestamp=timestamps[index],
                 frame_index=index,
             )
         )
-        index += 1
     capture.release()
     return refs
+
+
+def _write_frame_ref(
+    *,
+    frame: Any,
+    frame_cache_dir: Path,
+    camera_name: str,
+    timestamp: float,
+    frame_index: int,
+) -> CameraFrameRef:
+    cv2 = _import_cv2()
+    image_path = frame_cache_dir / f"{frame_index:06d}_t{timestamp:08.3f}.jpg"
+    if not image_path.exists() and not cv2.imwrite(str(image_path), frame):
+        raise RuntimeError(f"Could not write REASSEMBLE frame: {image_path}")
+    return CameraFrameRef(
+        camera_name=camera_name,
+        timestamp_sec=timestamp,
+        image_path=image_path,
+        frame_index=frame_index,
+    )
 
 
 def _frames_from_image_dir(
@@ -491,7 +670,8 @@ def _frames_from_image_dir(
         key=_natural_sort_key,
     )
     refs: list[CameraFrameRef] = []
-    for index, image_path in enumerate(image_paths):
+    for fallback_index, image_path in enumerate(image_paths):
+        index = _frame_index_from_filename(image_path, fallback_index)
         timestamp = timestamps[index] if index < len(timestamps) else _timestamp_from_filename(image_path, index)
         refs.append(
             CameraFrameRef(
@@ -594,6 +774,30 @@ def _timestamp_from_filename(path: Path, fallback_index: int) -> float:
         except ValueError:
             pass
     return float(fallback_index)
+
+
+def _frame_index_from_filename(path: Path, fallback_index: int) -> int:
+    match = re.match(r"(\d+)", path.stem)
+    if match:
+        try:
+            return int(match.group(1))
+        except ValueError:
+            pass
+    return int(fallback_index)
+
+
+def _frame_indices_for_windows(
+    timestamps: list[float],
+    windows: list[tuple[float, float]] | None,
+) -> list[int] | None:
+    if windows is None:
+        return None
+    selected: list[int] = []
+    for index, timestamp in enumerate(timestamps):
+        timestamp = float(timestamp)
+        if any(start <= timestamp <= end for start, end in windows):
+            selected.append(index)
+    return selected
 
 
 def _import_cv2() -> Any:

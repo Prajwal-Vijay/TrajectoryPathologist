@@ -9,10 +9,12 @@ from pathologist.metrics.helpers import (
     align_timestamps,
     extract_vector_series,
     find_stream,
+    grouped_l2_norms,
     l2_norm,
     safe_dt,
     summarize,
     vector_diff,
+    vector_group_indices,
 )
 from pathologist.schemas.common import (
     Modality,
@@ -161,6 +163,236 @@ class EndEffectorCartesianPathLengthMetric:
         )
 
 
+class _EndEffectorVelocityNormMetric:
+    """Shared implementation for linear/angular EEF speed profiles."""
+
+    name = ""
+    component_key = ""
+    description = ""
+    unit = ""
+    tail_interpretation = "auto"
+
+    def compute(self, context: MetricComputationContext) -> MetricResult:
+        stream = find_stream(
+            context.bundle,
+            [Modality.TELEMETRY],
+            preferred_names=["eef_velocity"],
+        )
+        timestamps, velocities = extract_vector_series(
+            stream,
+            [self.component_key],
+        )
+        if stream is None or len(velocities) < 2:
+            return MetricResult(
+                name=self.name,
+                description=self.description,
+                source_modalities=[Modality.TELEMETRY],
+                metadata={
+                    "available": False,
+                    "unavailable_reason": (
+                        f"requires at least two {self.component_key} samples"
+                    ),
+                },
+            )
+
+        vector_width = min((len(velocity) for velocity in velocities), default=0)
+        vector_groups = vector_group_indices(stream, vector_width)
+        component_speed_norms = {name: [] for name in vector_groups}
+        speed_norms = []
+        for velocity in velocities:
+            speed_norms.append(l2_norm(velocity))
+            grouped_norms = grouped_l2_norms(velocity, vector_groups)
+            for name, value in grouped_norms.items():
+                component_speed_norms[name].append(value)
+        sample_timestamps = align_timestamps(timestamps, len(speed_norms))
+        return MetricResult(
+            name=self.name,
+            description=self.description,
+            source_modalities=[stream.modality],
+            unit=self.unit,
+            samples=[
+                MetricSample(timestamp_sec=timestamp, value=value)
+                for timestamp, value in zip(sample_timestamps, speed_norms)
+            ],
+            summary=summarize(speed_norms),
+            thresholds=[],
+            events=[],
+            display_hint=f"{self.name}_timeseries",
+            metadata={
+                "available": True,
+                "stream_name": stream.name,
+                "source_component": self.component_key,
+                "surprise_tail_interpretation": self.tail_interpretation,
+                "ecod_component_values": (
+                    component_speed_norms if len(component_speed_norms) > 1 else {}
+                ),
+                "ecod_component_reduction": (
+                    "max_after_ecod" if len(component_speed_norms) > 1 else None
+                ),
+            },
+        )
+
+
+class EefLinearVelocitySpikeMetric(_EndEffectorVelocityNormMetric):
+    """EEF translational speed with ECOD-selected tail semantics."""
+
+    name = "eef_linear_velocity_spike"
+    component_key = "eef_linear_velocity"
+    description = (
+        "Measured EEF linear-speed norm with trajectory-relative ECOD tail selection."
+    )
+    unit = "meters_per_second"
+
+
+class EefAngularVelocitySpikeMetric(_EndEffectorVelocityNormMetric):
+    """EEF rotational speed with ECOD-selected tail semantics."""
+
+    name = "eef_angular_velocity_spike"
+    component_key = "eef_angular_velocity"
+    description = (
+        "Measured EEF angular-speed norm with trajectory-relative ECOD tail selection."
+    )
+    unit = "radians_per_second"
+
+
+class EefTranslationalStallingMetric(_EndEffectorVelocityNormMetric):
+    """EEF translational speed interpreted only through left-tail rarity."""
+
+    name = "eef_translational_stalling"
+    component_key = "eef_linear_velocity"
+    description = "Measured EEF linear-speed norm used to detect translational stalling."
+    unit = "meters_per_second"
+    tail_interpretation = "left"
+
+
+class EefRotationalStallingMetric(_EndEffectorVelocityNormMetric):
+    """EEF rotational speed interpreted only through left-tail rarity."""
+
+    name = "eef_rotational_stalling"
+    component_key = "eef_angular_velocity"
+    description = "Measured EEF angular-speed norm used to detect rotational stalling."
+    unit = "radians_per_second"
+    tail_interpretation = "left"
+
+
+class _EndEffectorJerkMetric:
+    """Shared implementation for EEF linear/angular jerk profiles."""
+
+    name = ""
+    component_key = ""
+    description = ""
+    unit = ""
+
+    def compute(self, context: MetricComputationContext) -> MetricResult:
+        stream = find_stream(
+            context.bundle,
+            [Modality.TELEMETRY],
+            preferred_names=["eef_velocity"],
+        )
+        timestamps, velocities = extract_vector_series(
+            stream,
+            [self.component_key],
+        )
+        if stream is None or len(velocities) < 3:
+            return MetricResult(
+                name=self.name,
+                description=self.description,
+                source_modalities=[Modality.TELEMETRY],
+                metadata={
+                    "available": False,
+                    "unavailable_reason": (
+                        f"requires at least three {self.component_key} samples"
+                    ),
+                },
+            )
+
+        vector_width = min((len(velocity) for velocity in velocities), default=0)
+        vector_groups = vector_group_indices(stream, vector_width)
+        accelerations = []
+        acceleration_times = []
+        for index in range(1, len(velocities)):
+            dt = safe_dt(timestamps[index - 1], timestamps[index])
+            accelerations.append(
+                [
+                    value / dt
+                    for value in vector_diff(
+                        velocities[index],
+                        velocities[index - 1],
+                    )
+                ]
+            )
+            acceleration_times.append(timestamps[index])
+
+        jerk_norms = []
+        jerk_times = []
+        component_jerk_norms = {name: [] for name in vector_groups}
+        for index in range(1, len(accelerations)):
+            dt = safe_dt(
+                acceleration_times[index - 1],
+                acceleration_times[index],
+            )
+            jerk = [
+                value / dt
+                for value in vector_diff(
+                    accelerations[index],
+                    accelerations[index - 1],
+                )
+            ]
+            jerk_norms.append(l2_norm(jerk))
+            grouped_jerks = grouped_l2_norms(jerk, vector_groups)
+            for name, value in grouped_jerks.items():
+                component_jerk_norms[name].append(value)
+            jerk_times.append(acceleration_times[index])
+
+        return MetricResult(
+            name=self.name,
+            description=self.description,
+            source_modalities=[stream.modality],
+            unit=self.unit,
+            samples=[
+                MetricSample(timestamp_sec=timestamp, value=value)
+                for timestamp, value in zip(jerk_times, jerk_norms)
+            ],
+            summary=summarize(jerk_norms),
+            thresholds=[],
+            events=[],
+            display_hint=f"{self.name}_timeseries",
+            metadata={
+                "available": True,
+                "stream_name": stream.name,
+                "source_component": self.component_key,
+                "derivative_source": "measured_eef_velocity",
+                "surprise_tail_interpretation": "auto",
+                "ecod_component_values": (
+                    component_jerk_norms if len(component_jerk_norms) > 1 else {}
+                ),
+                "ecod_component_reduction": (
+                    "max_after_ecod" if len(component_jerk_norms) > 1 else None
+                ),
+            },
+        )
+
+
+class EefTranslationalJerkMetric(_EndEffectorJerkMetric):
+    """EEF translational jerk with ECOD-selected tail semantics."""
+
+    name = "eef_translational_jerk"
+    component_key = "eef_linear_velocity"
+    description = (
+        "EEF translational-jerk norm derived from measured Cartesian velocity."
+    )
+    unit = "meters_per_second_cubed"
+
+
+class EefAngularJerkMetric(_EndEffectorJerkMetric):
+    """EEF angular jerk with ECOD-selected tail semantics."""
+
+    name = "eef_angular_jerk"
+    component_key = "eef_angular_velocity"
+    description = "EEF angular-jerk norm derived from measured Cartesian velocity."
+    unit = "radians_per_second_cubed"
+
+
 class MotionSmoothnessMetric:
     """Jerk-based smoothness profile from vector trajectories."""
 
@@ -196,10 +428,16 @@ class MotionSmoothnessMetric:
 
         jerks = []
         jerk_times = []
+        vector_width = min((len(position) for position in positions), default=0)
+        vector_groups = vector_group_indices(stream, vector_width)
+        component_jerks = {name: [] for name in vector_groups}
         for index in range(1, len(accelerations)):
             dt = safe_dt(acceleration_times[index - 1], acceleration_times[index])
             jerk_vector = [item / dt for item in vector_diff(accelerations[index], accelerations[index - 1])]
             jerks.append(l2_norm(jerk_vector))
+            grouped_jerks = grouped_l2_norms(jerk_vector, vector_groups)
+            for name, value in grouped_jerks.items():
+                component_jerks[name].append(value)
             jerk_times.append(acceleration_times[index])
 
         duration = max(timestamps[-1] - timestamps[0], 0.0)
@@ -228,6 +466,10 @@ class MotionSmoothnessMetric:
                 "mean_jerk_norm": mean_jerk,
                 "normalized_jerk": normalized_jerk,
                 "peak_velocity_norm": peak_velocity,
+                "ecod_component_values": component_jerks if len(component_jerks) > 1 else {},
+                "ecod_component_reduction": (
+                    "max_after_ecod" if len(component_jerks) > 1 else None
+                ),
             },
         )
 
@@ -254,7 +496,15 @@ class VelocitySpikeMetric:
                 metadata={"available": False, "unavailable_reason": "requires at least two velocity samples"},
             )
 
-        velocity_norms = [l2_norm(velocity) for velocity in velocities]
+        vector_width = min((len(velocity) for velocity in velocities), default=0)
+        vector_groups = vector_group_indices(stream, vector_width)
+        component_velocity_norms = {name: [] for name in vector_groups}
+        velocity_norms = []
+        for velocity in velocities:
+            velocity_norms.append(l2_norm(velocity))
+            grouped_norms = grouped_l2_norms(velocity, vector_groups)
+            for name, value in grouped_norms.items():
+                component_velocity_norms[name].append(value)
         sample_timestamps = align_timestamps(timestamps, len(velocity_norms))
         return MetricResult(
             name=self.name,
@@ -272,6 +522,12 @@ class VelocitySpikeMetric:
             metadata={
                 "available": True,
                 "stream_name": stream.name,
+                "ecod_component_values": (
+                    component_velocity_norms if len(component_velocity_norms) > 1 else {}
+                ),
+                "ecod_component_reduction": (
+                    "max_after_ecod" if len(component_velocity_norms) > 1 else None
+                ),
             },
         )
 
@@ -303,13 +559,28 @@ class StallingMetric:
             gripper_stream,
             ["gripper", "grippers", "proprioception_grippers", "gripper_state"],
         )
+        position_width = min((len(position) for position in positions), default=0)
+        vector_groups = vector_group_indices(stream, position_width)
         positions, gripper_dims_used = _append_gripper_state_if_aligned(positions, grippers)
+        if gripper_dims_used > 0:
+            gripper_groups = vector_group_indices(gripper_stream, gripper_dims_used)
+            for name, indices in gripper_groups.items():
+                if name in vector_groups:
+                    vector_groups[name] = [
+                        *vector_groups[name],
+                        *(position_width + index for index in indices),
+                    ]
 
         speeds = []
         speed_times = []
+        component_speeds = {name: [] for name in vector_groups}
         for index in range(1, len(positions)):
             dt = safe_dt(timestamps[index - 1], timestamps[index])
-            speeds.append(l2_norm(vector_diff(positions[index], positions[index - 1])) / dt)
+            position_delta = vector_diff(positions[index], positions[index - 1])
+            speeds.append(l2_norm(position_delta) / dt)
+            grouped_speeds = grouped_l2_norms(position_delta, vector_groups)
+            for name, value in grouped_speeds.items():
+                component_speeds[name].append(value / dt)
             speed_times.append(timestamps[index])
 
         return MetricResult(
@@ -332,6 +603,12 @@ class StallingMetric:
                 "gripper_dims_used": gripper_dims_used,
                 "includes_gripper_state_change": gripper_dims_used > 0,
                 "surprise_tail_interpretation": "left",
+                "ecod_component_values": (
+                    component_speeds if len(component_speeds) > 1 else {}
+                ),
+                "ecod_component_reduction": (
+                    "max_after_ecod" if len(component_speeds) > 1 else None
+                ),
             },
         )
 

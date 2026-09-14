@@ -16,6 +16,8 @@ def select_keyframes(
     frame_budget: int,
     metric_profile: Any | None = None,
     config: dict[str, Any] | None = None,
+    ecod_aggregate_path: str | Path | None = None,
+    selection_stats: dict[str, Any] | None = None,
 ) -> list[CameraFrameRef]:
     """Select a fixed-budget frame set using a named strategy."""
 
@@ -25,10 +27,22 @@ def select_keyframes(
     if selector_name == "uniform":
         return select_uniform_keyframes(bundle.camera_frames, frame_budget)
     if selector_name in {"flow", "kite_flow"}:
-        return select_kite_flow_keyframes(bundle.camera_frames, frame_budget, config=config or {})
+        return select_kite_flow_keyframes(
+            bundle.camera_frames,
+            frame_budget,
+            config=config or {},
+            pad_to_budget=True,
+        )
     if selector_name == "metric":
         resolved_profile = metric_profile or MetricEngine(config=config or {}).compute(bundle)
-        return select_metric_keyframes(bundle, resolved_profile, frame_budget, config=config or {})
+        return select_metric_keyframes(
+            bundle,
+            resolved_profile,
+            frame_budget,
+            config=config or {},
+            ecod_aggregate_path=ecod_aggregate_path,
+            selection_stats=selection_stats,
+        )
     raise ValueError(f"Unsupported RoboFAC selector: {selector_name}")
 
 
@@ -52,8 +66,15 @@ def select_metric_keyframes(
     metric_profile: Any,
     frame_budget: int,
     config: dict[str, Any],
+    ecod_aggregate_path: str | Path | None = None,
+    selection_stats: dict[str, Any] | None = None,
 ) -> list[CameraFrameRef]:
-    """Select frames from metric-overlap proposals without exposing metric values."""
+    """Select frames from metric-overlap proposals without exposing metric values.
+
+    When the surprise landscape yields fewer than ``frame_budget`` distinct peaks the
+    remainder is padded with uniform frames. Pass ``selection_stats`` to observe how
+    many frames came from each source instead of letting the fallback pass silently.
+    """
 
     selector_config = config.get("selector") if isinstance(config.get("selector"), dict) else {}
     surprise_flood_config = selector_config.get("surprise_flood", {})
@@ -66,7 +87,11 @@ def select_metric_keyframes(
         metric_packet_context_steps=0,
         surprise_flood_config=surprise_flood_config,
     )
-    proposals = selector.select(metric_profile, trajectory_bundle=bundle)
+    proposals = selector.select(
+        metric_profile,
+        trajectory_bundle=bundle,
+        ecod_aggregate_path=ecod_aggregate_path,
+    )
     chosen: list[CameraFrameRef] = []
     seen: set[tuple[str, int | None, float]] = set()
     for proposal in proposals:
@@ -74,6 +99,7 @@ def select_metric_keyframes(
             proposal.candidate_frames,
             proposal.time_window,
             proposal=proposal,
+            bundle_frames=bundle.camera_frames,
         )
         if frame is None:
             continue
@@ -83,31 +109,82 @@ def select_metric_keyframes(
         seen.add(key)
         chosen.append(frame)
         if len(chosen) >= frame_budget:
+            _record_selection_stats(
+                selection_stats,
+                proposal_count=len(proposals),
+                metric_frame_count=len(chosen),
+                frame_budget=frame_budget,
+                selected_frame_count=len(chosen),
+            )
             return sorted(chosen, key=_frame_sort_key)
+    metric_frame_count = len(chosen)
     if len(chosen) < frame_budget:
-        for frame in select_uniform_keyframes(bundle.camera_frames, frame_budget):
-            key = (frame.camera_name, frame.frame_index, frame.timestamp_sec)
-            if key not in seen:
-                chosen.append(frame)
-                seen.add(key)
-            if len(chosen) >= frame_budget:
-                break
+        chosen = _uniformly_pad_keyframes(
+            chosen,
+            bundle.camera_frames,
+            frame_budget,
+        )
+    _record_selection_stats(
+        selection_stats,
+        proposal_count=len(proposals),
+        metric_frame_count=metric_frame_count,
+        frame_budget=frame_budget,
+        selected_frame_count=len(chosen),
+    )
     return sorted(chosen[:frame_budget], key=_frame_sort_key)
+
+
+def _record_selection_stats(
+    selection_stats: dict[str, Any] | None,
+    *,
+    proposal_count: int,
+    metric_frame_count: int,
+    frame_budget: int,
+    selected_frame_count: int,
+) -> None:
+    if selection_stats is None:
+        return
+    padded = max(0, selected_frame_count - metric_frame_count)
+    selection_stats.update(
+        {
+            "proposal_count": proposal_count,
+            "metric_frame_count": metric_frame_count,
+            "uniform_padded_frame_count": padded,
+            "frame_budget": frame_budget,
+            "padded": padded > 0,
+            "unfilled_frame_count": max(0, frame_budget - selected_frame_count),
+        }
+    )
 
 
 def select_kite_flow_keyframes(
     frames: list[CameraFrameRef],
     frame_budget: int,
     config: dict[str, Any] | None = None,
+    selection_stats: dict[str, Any] | None = None,
+    pad_to_budget: bool = False,
 ) -> list[CameraFrameRef]:
-    """Select motion-salient keyframes using KITE-style optical-flow peak picking.
+    """Select KITE motion keyframes, optionally padding to a fixed budget.
 
-    This reproduces the KITE keyframe-selection baseline shape: sample video frames
-    at a fixed stride, score consecutive sampled frames with Farneback dense flow,
-    normalize motion magnitudes, and apply fixed-radius non-maximum suppression
-    over the sampled-frame index space.
+    Selection semantics are ported from ``m80hz/kite`` commit
+    ``afead048974e5267087ef72ac2c54950995d6c5c``:
+    sample at a fixed stride, score consecutive sampled frames with Farneback flow,
+    min-max normalize the magnitudes, then greedily retain the strongest positions
+    separated by more than five sampled positions. When ``pad_to_budget`` is true and
+    NMS yields fewer than ``frame_budget`` frames, the remainder is sampled uniformly
+    over all other frames from the beginning to the end of the trajectory. The flow
+    resize defaults to 128x128 for runtime; official KITE uses 512x512.
     """
 
+    frames = sorted(frames, key=_frame_sort_key)
+    if not frames:
+        _record_fixed_budget_stats(
+            selection_stats,
+            method_frame_count=0,
+            frame_budget=frame_budget,
+            selected_frame_count=0,
+        )
+        return []
     cv2 = _import_cv2()
     flow_config = {}
     if config and isinstance(config.get("robofac_qa"), dict):
@@ -116,22 +193,16 @@ def select_kite_flow_keyframes(
     nms_radius = max(0, int(flow_config.get("nms_radius", 5)))
     resize_width = int(flow_config.get("resize_width", 128))
     resize_height = int(flow_config.get("resize_height", 128))
-    frames = sorted(frames, key=_frame_sort_key)
-    if len(frames) <= frame_budget:
-        return frames
 
     sampled_indices = list(range(0, len(frames), frame_stride))
     sampled_frames = [frames[index] for index in sampled_indices]
-    if len(sampled_frames) <= frame_budget:
-        return sampled_frames
 
     flow_scores: list[float] = []
+    scored_frames: list[CameraFrameRef] = []
     previous_gray = None
     for frame_ref in sampled_frames:
         image = cv2.imread(str(Path(frame_ref.image_path)))
         if image is None:
-            if previous_gray is not None:
-                flow_scores.append(0.0)
             continue
         image = cv2.resize(image, (resize_width, resize_height))
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -150,36 +221,46 @@ def select_kite_flow_keyframes(
             )
             magnitude, _ = cv2.cartToPolar(flow[..., 0], flow[..., 1])
             flow_scores.append(float(magnitude.mean()))
+            scored_frames.append(frame_ref)
         previous_gray = gray
 
     if not flow_scores:
-        return select_uniform_keyframes(frames, frame_budget)
+        selected_frames = [frames[len(frames) // 2]]
+    else:
+        min_score = min(flow_scores)
+        max_score = max(flow_scores)
+        denominator = max_score - min_score + 1e-6
+        normalized_scores = [(score - min_score) / denominator for score in flow_scores]
 
-    max_score = max(flow_scores)
-    if max_score > 0:
-        flow_scores = [score / max_score for score in flow_scores]
+        selected_sample_positions = _top_peaks(
+            normalized_scores,
+            frame_budget,
+            suppression_radius=nms_radius,
+        )
+        selected_frames = [
+            scored_frames[position] for position in selected_sample_positions
+        ]
 
-    selected_sample_positions = _top_peaks(
-        flow_scores,
-        frame_budget,
-        suppression_radius=nms_radius,
+    method_frame_count = len(selected_frames)
+    method_frame_keys = [_frame_identity(frame) for frame in selected_frames]
+    if pad_to_budget:
+        selected_frames = _uniformly_pad_keyframes(
+            selected_frames,
+            frames,
+            frame_budget,
+        )
+    _record_fixed_budget_stats(
+        selection_stats,
+        method_frame_count=method_frame_count,
+        frame_budget=frame_budget,
+        selected_frame_count=len(selected_frames),
+        method_frame_keys=method_frame_keys,
     )
-    selected_indices = [
-        sampled_indices[min(position + 1, len(sampled_indices) - 1)]
-        for position in selected_sample_positions
-    ]
-    if len(selected_indices) < frame_budget:
-        for frame in select_uniform_keyframes(frames, frame_budget):
-            index = frames.index(frame)
-            if index not in selected_indices:
-                selected_indices.append(index)
-            if len(selected_indices) >= frame_budget:
-                break
-    return [frames[index] for index in sorted(selected_indices[:frame_budget])]
+    return selected_frames
 
 
 def select_flow_keyframes(frames: list[CameraFrameRef], frame_budget: int) -> list[CameraFrameRef]:
-    """Backward-compatible alias for KITE-style flow keyframe selection."""
+    """Backward-compatible alias for official KITE motion keyframe selection."""
 
     return select_kite_flow_keyframes(frames, frame_budget, config={})
 
@@ -188,8 +269,6 @@ def _top_peaks(scores: list[float], count: int, suppression_radius: int) -> list
     candidates = sorted(range(len(scores)), key=lambda index: scores[index], reverse=True)
     selected: list[int] = []
     for index in candidates:
-        if scores[index] <= 0:
-            continue
         if any(abs(index - chosen) <= suppression_radius for chosen in selected):
             continue
         selected.append(index)
@@ -198,23 +277,86 @@ def _top_peaks(scores: list[float], count: int, suppression_radius: int) -> list
     return selected
 
 
+def _uniformly_pad_keyframes(
+    selected_frames: list[CameraFrameRef],
+    all_frames: list[CameraFrameRef],
+    frame_budget: int,
+) -> list[CameraFrameRef]:
+    """Fill a short selection uniformly over the entire remaining trajectory."""
+
+    chosen = list(selected_frames[:frame_budget])
+    if len(chosen) >= frame_budget:
+        return sorted(chosen, key=_frame_sort_key)
+    seen = {_frame_identity(frame) for frame in chosen}
+    remaining_frames = [
+        frame for frame in sorted(all_frames, key=_frame_sort_key)
+        if _frame_identity(frame) not in seen
+    ]
+    remaining_budget = frame_budget - len(chosen)
+    chosen.extend(select_uniform_keyframes(remaining_frames, remaining_budget))
+    return sorted(chosen[:frame_budget], key=_frame_sort_key)
+
+
+def _record_fixed_budget_stats(
+    selection_stats: dict[str, Any] | None,
+    *,
+    method_frame_count: int,
+    frame_budget: int,
+    selected_frame_count: int,
+    method_frame_keys: list[tuple[str, int | None, float]] | None = None,
+) -> None:
+    if selection_stats is None:
+        return
+    padded = max(0, selected_frame_count - method_frame_count)
+    selection_stats.update(
+        {
+            "method_frame_count": method_frame_count,
+            "uniform_padded_frame_count": padded,
+            "frame_budget": frame_budget,
+            "selected_frame_count": selected_frame_count,
+            "padded": padded > 0,
+            "unfilled_frame_count": max(0, frame_budget - selected_frame_count),
+            "method_frame_keys": method_frame_keys or [],
+        }
+    )
+
+
 def _representative_frame_for_proposal(
     frames: list[CameraFrameRef],
     time_window: Any,
     proposal: Any | None = None,
+    bundle_frames: list[CameraFrameRef] | None = None,
 ) -> CameraFrameRef | None:
+    """Return the frame closest to the proposal peak.
+
+    ``frames`` are the proposal's candidate frames, which the selector thins to
+    ``max_frames_per_camera`` and may therefore no longer contain the frame sitting on
+    the peak. Candidates still decide which camera wins; when ``bundle_frames`` is given
+    the timestamp is then refined against every frame of that camera so the returned
+    frame lands on the peak rather than up to one stride away from it.
+    """
+
     if not frames:
         return None
     target_sec = _proposal_peak_sec(proposal)
     if target_sec is None:
         target_sec = time_window.center_sec if time_window is not None else frames[len(frames) // 2].timestamp_sec
-    return min(
-        frames,
-        key=lambda frame: (
+
+    def distance_to_target(frame: CameraFrameRef) -> tuple[float, int]:
+        return (
             abs(frame.timestamp_sec - target_sec),
             frame.frame_index if frame.frame_index is not None else 10**12,
-        ),
-    )
+        )
+
+    nearest_candidate = min(frames, key=distance_to_target)
+    if not bundle_frames:
+        return nearest_candidate
+    same_camera_frames = [
+        frame for frame in bundle_frames if frame.camera_name == nearest_candidate.camera_name
+    ]
+    if not same_camera_frames:
+        return nearest_candidate
+    return min(same_camera_frames, key=distance_to_target)
 
 
 def _proposal_peak_sec(proposal: Any | None) -> float | None:
@@ -249,6 +391,10 @@ def _as_float_or_none(value: Any) -> float | None:
 
 def _frame_sort_key(frame: CameraFrameRef) -> tuple[float, int]:
     return (frame.timestamp_sec, frame.frame_index if frame.frame_index is not None else -1)
+
+
+def _frame_identity(frame: CameraFrameRef) -> tuple[str, int | None, float]:
+    return (frame.camera_name, frame.frame_index, frame.timestamp_sec)
 
 
 def _import_cv2() -> Any:

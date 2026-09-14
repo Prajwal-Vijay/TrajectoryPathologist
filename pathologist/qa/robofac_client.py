@@ -19,7 +19,13 @@ from pathologist.schemas.trajectory_bundle import CameraFrameRef
 class RoboFACQAClient(Protocol):
     """Protocol for clients that answer RoboFAC questions from selected frames."""
 
-    def answer(self, prompt: str, frames: list[CameraFrameRef]) -> str:
+    def answer(
+        self,
+        prompt: str,
+        frames: list[CameraFrameRef],
+        *,
+        system_prompt: str | None = None,
+    ) -> str:
         """Return a raw text answer."""
 
 
@@ -51,10 +57,13 @@ class OpenAIRoboFACQAClient:
         timeout_sec: float | None = None,
         max_output_tokens: int = 512,
         temperature: float | None = None,
+        top_p: float | None = None,
+        include_frame_metadata: bool = True,
+        include_frame_timing_metadata: bool = True,
         max_retries: int | None = None,
         retry_backoff_sec: float | None = None,
     ) -> None:
-        self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
+        self.api_key = (api_key or os.environ.get("OPENAI_API_KEY") or "").strip()
         if not self.api_key:
             raise ValueError("OpenAI API key is required. Set OPENAI_API_KEY or pass api_key.")
         self.model = model or os.environ.get("OPENAI_ROBOFAC_QA_MODEL", "gpt-4o")
@@ -62,6 +71,9 @@ class OpenAIRoboFACQAClient:
         self.timeout_sec = _resolve_timeout_sec(timeout_sec)
         self.max_output_tokens = max_output_tokens
         self.temperature = _resolve_temperature(temperature)
+        self.top_p = _resolve_top_p(top_p)
+        self.include_frame_metadata = bool(include_frame_metadata)
+        self.include_frame_timing_metadata = bool(include_frame_timing_metadata)
         self.max_retries = _resolve_nonnegative_int(
             max_retries,
             env_var="OPENAI_ROBOFAC_QA_MAX_RETRIES",
@@ -75,10 +87,20 @@ class OpenAIRoboFACQAClient:
             label="OpenAI RoboFAC QA retry backoff seconds",
         )
 
-    def answer(self, prompt: str, frames: list[CameraFrameRef]) -> str:
+    def answer(
+        self,
+        prompt: str,
+        frames: list[CameraFrameRef],
+        *,
+        system_prompt: str | None = None,
+    ) -> str:
         """Answer one RoboFAC question from selected RGB frames."""
 
-        request_body = self._build_request_body(prompt=prompt, frames=frames)
+        request_body = self._build_request_body(
+            prompt=prompt,
+            frames=frames,
+            system_prompt=system_prompt,
+        )
         request = urllib.request.Request(
             self.api_url,
             data=json.dumps(request_body).encode("utf-8"),
@@ -118,27 +140,48 @@ class OpenAIRoboFACQAClient:
             ) from exc
         return _extract_output_text(response_body)
 
-    def _build_request_body(self, prompt: str, frames: list[CameraFrameRef]) -> dict[str, object]:
+    def _build_request_body(
+        self,
+        prompt: str,
+        frames: list[CameraFrameRef],
+        system_prompt: str | None = None,
+    ) -> dict[str, object]:
         """Build the Responses API request body."""
 
-        request_body = {
-            "model": self.model,
-            "input": [
+        messages: list[dict[str, object]] = []
+        if system_prompt:
+            messages.append(
                 {
-                    "role": "user",
+                    "role": "system",
                     "content": [
-                        *self._image_inputs(frames),
                         {
                             "type": "input_text",
-                            "text": prompt,
-                        },
+                            "text": system_prompt,
+                        }
                     ],
                 }
-            ],
+            )
+        messages.append(
+            {
+                "role": "user",
+                "content": [
+                    *self._image_inputs(frames),
+                    {
+                        "type": "input_text",
+                        "text": prompt,
+                    },
+                ],
+            }
+        )
+        request_body = {
+            "model": self.model,
+            "input": messages,
             "max_output_tokens": self.max_output_tokens,
         }
         if self.temperature is not None:
             request_body["temperature"] = self.temperature
+        if self.top_p is not None:
+            request_body["top_p"] = self.top_p
         return request_body
 
     def _image_inputs(self, frames: list[CameraFrameRef]) -> list[dict[str, str]]:
@@ -149,15 +192,19 @@ class OpenAIRoboFACQAClient:
                 continue
             mime_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
             encoded_image = base64.b64encode(path.read_bytes()).decode("utf-8")
-            content.append(
-                {
-                    "type": "input_text",
-                    "text": (
-                        f"frame_{index}: timestamp_sec={frame.timestamp_sec:.3f}, "
+            if self.include_frame_metadata:
+                label = f"[View: {frame.camera_name}]"
+                if self.include_frame_timing_metadata:
+                    label += (
+                        f" frame_{index}: timestamp_sec={frame.timestamp_sec:.3f}, "
                         f"original_frame_index={frame.frame_index}"
-                    ),
-                }
-            )
+                    )
+                content.append(
+                    {
+                        "type": "input_text",
+                        "text": label,
+                    }
+                )
             content.append(
                 {
                     "type": "input_image",
@@ -173,7 +220,13 @@ class StaticRoboFACQAClient:
     def __init__(self, answer_text: str = "") -> None:
         self.answer_text = answer_text
 
-    def answer(self, prompt: str, frames: list[CameraFrameRef]) -> str:
+    def answer(
+        self,
+        prompt: str,
+        frames: list[CameraFrameRef],
+        *,
+        system_prompt: str | None = None,
+    ) -> str:
         return self.answer_text
 
 
@@ -212,6 +265,14 @@ def _resolve_temperature(temperature: float | None) -> float | None:
     if not 0 <= temperature <= 2:
         raise ValueError("OpenAI RoboFAC QA temperature must be between 0 and 2.")
     return float(temperature)
+
+
+def _resolve_top_p(top_p: float | None) -> float | None:
+    if top_p is None:
+        return None
+    if not 0 <= top_p <= 1:
+        raise ValueError("OpenAI RoboFAC QA Top-P must be between 0 and 1.")
+    return float(top_p)
 
 
 def _resolve_timeout_sec(timeout_sec: float | None) -> float:
