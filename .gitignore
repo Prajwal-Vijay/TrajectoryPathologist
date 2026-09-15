@@ -1,7 +1,7 @@
 pathologist/left_handle_failure/
 __pycache__/
 *.py[cod]
-robofac_outputs/
+robofac*/
 RoboFAC-dataset/
 robofac_outputs_542/
 robofac_outputs_*/
@@ -12,3 +12,4 @@ RoboFine-Bench/
 ABC-130k_subset/
 ABC130K_failure_eval*/
 abc130k_smoke_cache/
+DROID*/
