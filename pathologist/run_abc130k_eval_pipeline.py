@@ -23,7 +23,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--selectors",
         nargs="+",
         default=["uniform", "kite_flow", "metric"],
-        choices=["uniform", "kite", "flow", "kite_flow", "prism", "metric"],
+        choices=[
+            "uniform",
+            "kite",
+            "flow",
+            "kite_flow",
+            "prism",
+            "metric",
+            "ronar",
+            "ronar_k",
+        ],
     )
     parser.add_argument(
         "--pad",
@@ -108,6 +117,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Optional reusable directory for binary robot masks.",
     )
     parser.add_argument(
+        "--ronar-sample-period-sec",
+        type=float,
+        default=0.2,
+        help="RONAR multimodal alignment interval. The paper uses 0.2 seconds.",
+    )
+    parser.add_argument(
+        "--ronar-threshold",
+        type=float,
+        default=80.0,
+        help="Threshold for the published variable-count RONAR selector.",
+    )
+    parser.add_argument(
         "--all-failure-trajectories",
         action="store_true",
         help="Evaluate every downloaded failure trajectory instead of one per task.",
@@ -142,6 +163,8 @@ def main() -> None:
         robot_mask_box_threshold=args.robot_mask_box_threshold,
         robot_mask_dilation_px=args.robot_mask_dilation_px,
         robot_mask_cache_dir=args.robot_mask_cache_dir,
+        ronar_sample_period_sec=args.ronar_sample_period_sec,
+        ronar_threshold=args.ronar_threshold,
         one_per_task=not args.all_failure_trajectories,
         max_episodes=args.max_episodes,
         config_path=args.config_path,

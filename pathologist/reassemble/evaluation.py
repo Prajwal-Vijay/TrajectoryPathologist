@@ -14,12 +14,20 @@ from pathologist.config import config_section, deep_merge, load_pipeline_config
 from pathologist.events import MetricEventSelector
 from pathologist.metrics import MetricEngine
 from pathologist.qa.robofac_selectors import select_kite_flow_keyframes, select_uniform_keyframes
+from pathologist.qa.ronar_selector import (
+    RONAR_DEFAULT_SAMPLE_PERIOD_SEC,
+    RONAR_DEFAULT_THRESHOLD,
+    RonarStatisticsAccumulator,
+    extract_ronar_features,
+    select_ronar_keyevents,
+)
 from pathologist.schemas.common import Modality, TimeWindow
 from pathologist.schemas.key_event import KeyEventProposal
 from pathologist.schemas.trajectory_bundle import CameraFrameRef, ModalityStream, TrajectoryBundle
 
 
 DEFAULT_SELECTORS = ["uniform", "kite_flow", "metric"]
+RONAR_SELECTORS = {"ronar", "ronar_k"}
 
 
 REASSEMBLE_CONFIG_OVERRIDE = {
@@ -56,6 +64,9 @@ def run_reassemble_eval_pipeline(
     target_demo_bundle_ids: list[str] | set[str] | None = None,
     frame_time_windows_by_h5_path: dict[str, list[tuple[float, float]]] | None = None,
     plot_ecod_aggregates: bool = False,
+    ronar_sample_period_sec: float = RONAR_DEFAULT_SAMPLE_PERIOD_SEC,
+    ronar_threshold: float = RONAR_DEFAULT_THRESHOLD,
+    ronar_calibration_cache: str | Path | None = None,
     resume: bool = False,
     verbose: bool = False,
 ) -> dict[str, Any]:
@@ -67,6 +78,10 @@ def run_reassemble_eval_pipeline(
         raise ValueError("Pass only one of h5_path or data_root, not both.")
     if top_k <= 0:
         raise ValueError("top_k must be positive.")
+    if ronar_sample_period_sec <= 0:
+        raise ValueError("ronar_sample_period_sec must be positive.")
+    if ronar_threshold < 0:
+        raise ValueError("ronar_threshold cannot be negative.")
     resolved_segment_level = segment_level.lower()
     if resolved_segment_level not in {"high", "low", "both"}:
         raise ValueError("--segment-level must be one of: high, low, both")
@@ -105,6 +120,11 @@ def run_reassemble_eval_pipeline(
         else output_path / "frame_cache"
     )
     resolved_frame_cache_dir.mkdir(parents=True, exist_ok=True)
+    resolved_ronar_calibration_cache = (
+        Path(ronar_calibration_cache).expanduser().resolve()
+        if ronar_calibration_cache is not None
+        else output_path / "ronar_calibration.json"
+    )
 
     config = deep_merge(load_pipeline_config(config_path=config_path), REASSEMBLE_CONFIG_OVERRIDE)
     resolved_metric_ranking = _resolve_metric_ranking(
@@ -135,6 +155,25 @@ def run_reassemble_eval_pipeline(
         h5_paths = h5_paths[:max_files]
 
     adapter = ReassembleBundleAdapter()
+    ronar_calibration: dict[str, Any] = {
+        "statistics_by_task": {},
+        "summary": {
+            "status": "not_requested",
+            "normalization_scope": "task_statistics",
+        },
+    }
+    if RONAR_SELECTORS.intersection(resolved_selectors):
+        ronar_calibration = _prepare_reassemble_ronar_calibration(
+            h5_paths=h5_paths,
+            adapter=adapter,
+            frame_cache_dir=resolved_frame_cache_dir,
+            camera_names=resolved_camera_names,
+            include_event_camera=resolved_include_event_camera,
+            robot_downsample_hz=resolved_robot_downsample_hz,
+            sample_period_sec=ronar_sample_period_sec,
+            cache_path=resolved_ronar_calibration_cache,
+            verbose=verbose,
+        )
     manifest: list[dict[str, Any]] = []
     alignment_debug: list[dict[str, Any]] = []
     eval_rows: list[dict[str, Any]] = []
@@ -347,6 +386,12 @@ def run_reassemble_eval_pipeline(
                         top_k=top_k,
                         requested_segment_level=resolved_segment_level,
                         config=config,
+                        ronar_camera_names=resolved_camera_names,
+                        ronar_sample_period_sec=ronar_sample_period_sec,
+                        ronar_threshold=ronar_threshold,
+                        ronar_statistics_by_task=ronar_calibration[
+                            "statistics_by_task"
+                        ],
                     )
                     for selector_name in resolved_selectors
                 ]
@@ -490,6 +535,19 @@ def run_reassemble_eval_pipeline(
         max_demo_duration_sec=max_demo_duration_sec,
         target_demo_bundle_ids=target_demo_bundle_id_set,
     )
+    summary["ronar"] = {
+        "requested": bool(RONAR_SELECTORS.intersection(resolved_selectors)),
+        "selectors": [
+            name for name in resolved_selectors if name in RONAR_SELECTORS
+        ],
+        "sample_period_sec": ronar_sample_period_sec,
+        "published_threshold": ronar_threshold,
+        "camera_names": resolved_camera_names,
+        "normalization_scope": "task_statistics_with_within_trajectory_fallback",
+        "calibration_cache": str(resolved_ronar_calibration_cache),
+        "calibration": ronar_calibration["summary"],
+    }
+    _write_json_atomic(summary_path, summary)
     return summary
 
 
@@ -912,8 +970,19 @@ def _evaluation_row_from_selected_peaks(
                 if selected_peak_times
                 else None
             ),
+            "failed_segment_recall": (
+                len(matched_segments) / len(failed_segments)
+                if failed_segments
+                else None
+            ),
+            "point_precision": (
+                len(matched_peak_secs) / len(selected_peak_times)
+                if selected_peak_times
+                else None
+            ),
             "matched_peak_secs": matched_peak_secs,
             "episode_hit_at_k": bool(matched_segments) if failed_segments else None,
+            "episode_hit": bool(matched_segments) if failed_segments else None,
             "matched_failed_segments": matched_segments,
         }
     return {
@@ -929,6 +998,130 @@ def _evaluation_row_from_selected_peaks(
     }
 
 
+def _prepare_reassemble_ronar_calibration(
+    *,
+    h5_paths: list[Path],
+    adapter: ReassembleBundleAdapter,
+    frame_cache_dir: Path,
+    camera_names: list[str],
+    include_event_camera: bool,
+    robot_downsample_hz: float,
+    sample_period_sec: float,
+    cache_path: Path,
+    verbose: bool,
+) -> dict[str, Any]:
+    """Build task-conditioned RONAR statistics from successful demonstrations."""
+
+    settings = {
+        "version": 1,
+        "h5_paths": [
+            {
+                "path": str(path.expanduser().resolve()),
+                "size": path.stat().st_size,
+                "mtime_ns": path.stat().st_mtime_ns,
+            }
+            for path in h5_paths
+        ],
+        "camera_names": list(camera_names),
+        "include_event_camera": include_event_camera,
+        "robot_downsample_hz": robot_downsample_hz,
+        "sample_period_sec": sample_period_sec,
+        "resize": [128, 128],
+        "calibration_cohort": "successful_high_level_demonstrations",
+    }
+    if cache_path.is_file():
+        try:
+            cached = json.loads(cache_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            cached = None
+        if (
+            isinstance(cached, dict)
+            and cached.get("settings") == settings
+            and isinstance(cached.get("statistics_by_task"), dict)
+        ):
+            return {
+                "statistics_by_task": cached["statistics_by_task"],
+                "summary": {
+                    **(
+                        cached.get("summary")
+                        if isinstance(cached.get("summary"), dict)
+                        else {}
+                    ),
+                    "status": "loaded_from_cache",
+                    "cache_path": str(cache_path),
+                },
+            }
+
+    accumulators: dict[str, RonarStatisticsAccumulator] = {}
+    calibration_demo_count = 0
+    errors: list[dict[str, str]] = []
+    for index, h5_path in enumerate(h5_paths, start=1):
+        _log(
+            verbose,
+            f"[RONAR calibration {index}/{len(h5_paths)}] {h5_path}",
+        )
+        try:
+            file_bundle = adapter.load(
+                h5_path,
+                frame_cache_dir=frame_cache_dir / h5_path.stem,
+                robot_downsample_hz=robot_downsample_hz,
+                camera_names=camera_names,
+                include_event_camera=include_event_camera,
+                extract_frames=True,
+            )
+            for demo_bundle in _successful_high_level_demo_bundles(file_bundle):
+                task_key = _ronar_task_key(demo_bundle)
+                if task_key is None:
+                    continue
+                features = extract_ronar_features(
+                    demo_bundle,
+                    camera_names=camera_names,
+                    sample_period_sec=sample_period_sec,
+                )
+                accumulators.setdefault(
+                    task_key,
+                    RonarStatisticsAccumulator(),
+                ).update(features)
+                calibration_demo_count += 1
+        except Exception as exc:
+            errors.append(
+                {
+                    "h5_path": str(h5_path),
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            )
+    statistics_by_task = {
+        task_key: accumulator.finalize()
+        for task_key, accumulator in sorted(accumulators.items())
+    }
+    summary = {
+        "status": "built",
+        "cache_path": str(cache_path),
+        "calibration_demo_count": calibration_demo_count,
+        "task_count": len(statistics_by_task),
+        "error_count": len(errors),
+        "errors": errors,
+    }
+    payload = {
+        "settings": settings,
+        "statistics_by_task": statistics_by_task,
+        "summary": summary,
+    }
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json_atomic(cache_path, payload)
+    return {
+        "statistics_by_task": statistics_by_task,
+        "summary": summary,
+    }
+
+
+def _ronar_task_key(bundle: TrajectoryBundle) -> str | None:
+    task_text = _high_level_task_text(bundle)
+    if task_text is None:
+        return None
+    return " ".join(task_text.lower().split())
+
+
 def _selector_evaluation_row(
     selector_name: str,
     bundle: TrajectoryBundle,
@@ -936,6 +1129,10 @@ def _selector_evaluation_row(
     top_k: int,
     requested_segment_level: str,
     config: dict[str, Any],
+    ronar_camera_names: list[str] | None = None,
+    ronar_sample_period_sec: float = RONAR_DEFAULT_SAMPLE_PERIOD_SEC,
+    ronar_threshold: float = RONAR_DEFAULT_THRESHOLD,
+    ronar_statistics_by_task: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
     if selector_name == "metric":
         return _evaluation_row(
@@ -953,6 +1150,38 @@ def _selector_evaluation_row(
             frames = select_uniform_keyframes(bundle.camera_frames, top_k)
         elif selector_name == "kite_flow":
             frames = select_kite_flow_keyframes(bundle.camera_frames, top_k, config=config)
+        elif selector_name in RONAR_SELECTORS:
+            task_key = _ronar_task_key(bundle)
+            task_statistics = (
+                (ronar_statistics_by_task or {}).get(task_key)
+                if task_key is not None
+                else None
+            )
+            selection = select_ronar_keyevents(
+                bundle,
+                camera_names=ronar_camera_names,
+                sample_period_sec=ronar_sample_period_sec,
+                threshold=ronar_threshold,
+                normalization_stats=task_statistics,
+                frame_budget=top_k if selector_name == "ronar_k" else None,
+            )
+            selected_peaks = [
+                event.to_dict(rank)
+                for rank, event in enumerate(selection.events, start=1)
+            ]
+            row = _evaluation_row_from_selected_peaks(
+                bundle=bundle,
+                selected_peaks=selected_peaks,
+                top_k=top_k,
+                requested_segment_level=requested_segment_level,
+                selector_name=selector_name,
+            )
+            row["selection_protocol"] = selection.metadata
+            if selector_name == "ronar":
+                row["requested_top_k"] = top_k
+                row["top_k"] = None
+                row = _without_at_k_fields(row)
+            return row
         else:
             raise ValueError(f"Unsupported REASSEMBLE selector: {selector_name}")
         selected_peaks = [
@@ -1002,7 +1231,9 @@ def _update_stats(
 
 def _update_stats_bucket(bucket: dict[str, float], recall: dict[str, Any]) -> None:
     bucket["trajectory_count"] += 1
-    bucket["episode_hits"] += 1 if recall["episode_hit_at_k"] else 0
+    bucket["episode_hits"] += (
+        1 if recall.get("episode_hit", recall.get("episode_hit_at_k")) else 0
+    )
     bucket["failed_segment_count"] += recall["failed_segment_count"]
     bucket["failed_segment_hits"] += recall["hit_failed_segment_count"]
     bucket["selected_peak_count"] += recall.get("selected_peak_count", 0)
@@ -1025,6 +1256,8 @@ def _finalize_stats(
             stats_accumulator.get(selector_name, {}),
             task_stats_accumulator.get(selector_name, {}),
         )
+    if "ronar" in output:
+        output["ronar"] = _without_at_k_fields(output["ronar"])
     return output
 
 
@@ -1114,6 +1347,7 @@ def _finalize_stats_bucket(values: dict[str, float]) -> dict[str, Any]:
         "trajectory_count": trajectory_count,
         "episode_hits": episode_hits,
         "episode_recall_at_k": episode_hits / trajectory_count if trajectory_count else None,
+        "episode_recall": episode_hits / trajectory_count if trajectory_count else None,
         "failed_segment_count": failed_segment_count,
         "failed_segment_hits": failed_segment_hits,
         "failed_segment_recall_at_k": (
@@ -1123,12 +1357,39 @@ def _finalize_stats_bucket(values: dict[str, float]) -> dict[str, Any]:
         ),
         "selected_peak_count": selected_peak_count,
         "selected_peak_hits": selected_peak_hits,
+        "mean_selected_events_per_trajectory": (
+            selected_peak_count / trajectory_count
+            if trajectory_count
+            else None
+        ),
+        "failed_segment_recall": (
+            failed_segment_hits / failed_segment_count
+            if failed_segment_count
+            else None
+        ),
+        "point_precision": (
+            selected_peak_hits / selected_peak_count
+            if selected_peak_count
+            else None
+        ),
         "point_precision_at_k": (
             selected_peak_hits / selected_peak_count
             if selected_peak_count
             else None
         ),
     }
+
+
+def _without_at_k_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_at_k_fields(item)
+            for key, item in value.items()
+            if "_at_k" not in key
+        }
+    if isinstance(value, list):
+        return [_without_at_k_fields(item) for item in value]
+    return value
 
 
 def _load_resume_state(
@@ -1565,7 +1826,7 @@ def _resolve_selectors(selectors: list[str] | None) -> list[str]:
         normalized = str(selector).lower()
         if normalized == "flow":
             normalized = "kite_flow"
-        if normalized not in {"uniform", "kite_flow", "metric"}:
+        if normalized not in {"uniform", "kite_flow", "metric", *RONAR_SELECTORS}:
             raise ValueError(f"Unsupported REASSEMBLE selector: {selector}")
         if normalized not in resolved:
             resolved.append(normalized)

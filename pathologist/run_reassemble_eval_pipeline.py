@@ -22,7 +22,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--selectors",
         nargs="+",
         default=["uniform", "kite_flow", "metric"],
-        choices=["uniform", "flow", "kite_flow", "metric"],
+        choices=["uniform", "flow", "kite_flow", "metric", "ronar", "ronar_k"],
         help="Selectors to compare. Defaults to all three: uniform, kite_flow, metric.",
     )
     parser.add_argument(
@@ -82,6 +82,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Write raw/smoothed ECOD aggregate plots and local-maxima JSON under ecod_aggregates/.",
     )
+    parser.add_argument(
+        "--ronar-sample-period-sec",
+        type=float,
+        default=0.2,
+        help="RONAR multimodal alignment interval. The paper uses 0.2 seconds.",
+    )
+    parser.add_argument(
+        "--ronar-threshold",
+        type=float,
+        default=80.0,
+        help="Threshold for the published variable-count RONAR selector.",
+    )
+    parser.add_argument(
+        "--ronar-calibration-cache",
+        default=None,
+        help=(
+            "Reusable task-statistics cache. Defaults to "
+            "<output-dir>/ronar_calibration.json."
+        ),
+    )
     parser.add_argument("--max-files", type=int, default=None, help="Optional cap for folder evaluation.")
     parser.add_argument(
         "--max-demos",
@@ -118,6 +138,9 @@ def main() -> None:
         evaluation_unit=args.evaluation_unit,
         max_demos=args.max_demos,
         plot_ecod_aggregates=args.plot,
+        ronar_sample_period_sec=args.ronar_sample_period_sec,
+        ronar_threshold=args.ronar_threshold,
+        ronar_calibration_cache=args.ronar_calibration_cache,
         resume=args.resume,
         verbose=args.verbose,
     )

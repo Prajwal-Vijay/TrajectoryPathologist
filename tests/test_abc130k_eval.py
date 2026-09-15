@@ -136,6 +136,24 @@ def test_abc_cli_accepts_selector_specific_padding() -> None:
     assert args.pad == ["prism", "kite"]
 
 
+def test_abc_cli_accepts_both_ronar_protocols() -> None:
+    args = build_arg_parser().parse_args(
+        [
+            "--selectors",
+            "ronar",
+            "ronar_k",
+            "--ronar-sample-period-sec",
+            "0.25",
+            "--ronar-threshold",
+            "60",
+        ]
+    )
+
+    assert args.selectors == ["ronar", "ronar_k"]
+    assert args.ronar_sample_period_sec == pytest.approx(0.25)
+    assert args.ronar_threshold == pytest.approx(60.0)
+
+
 def test_abc_running_metrics_message_reports_both_recalls() -> None:
     message = _running_metrics_message(
         {
@@ -344,6 +362,82 @@ def test_abc_metric_padding_spans_the_full_remaining_trajectory(tmp_path: Path) 
     ]
 
 
+def test_abc_ronar_k_preserves_protocol_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = TrajectoryBundle(
+        bundle_id="episode",
+        source_format=BundleFormat.ABC130K_MCAP,
+        root_path=tmp_path / "episode.mcap",
+        duration_sec=4.0,
+        raw_metadata={
+            "task_name": "task",
+            "abc130k_segments": [
+                {
+                    "segment_id": "failure",
+                    "start_sec": 1.0,
+                    "end_sec": 3.0,
+                    "failure": True,
+                }
+            ],
+        },
+    )
+
+    class FakeEvent:
+        def __init__(self, timestamp: float) -> None:
+            self.timestamp = timestamp
+
+        def to_dict(self, rank: int) -> dict[str, object]:
+            return {
+                "rank": rank,
+                "peak_sec": self.timestamp,
+                "selection_source": "ronar_k_crossing",
+            }
+
+    protocol = {
+        "protocol": "per_trajectory_exact_k",
+        "genuine_selected_event_count": 5,
+        "uniform_padded_event_count": 0,
+    }
+    monkeypatch.setattr(
+        "pathologist.abc130k.evaluation.select_ronar_keyevents",
+        lambda *args, **kwargs: SimpleNamespace(
+            events=[
+                FakeEvent(timestamp)
+                for timestamp in (0.0, 1.0, 2.0, 3.0, 4.0)
+            ],
+            metadata=protocol,
+        ),
+    )
+
+    row = _evaluate_selector(
+        selector_name="ronar_k",
+        bundle=bundle,
+        proposals=[],
+        top_k=5,
+        config={},
+    )
+
+    assert row["selected_peak_count"] == 5
+    assert row["selected_peak_hit_count"] == 2
+    assert row["point_precision_at_k"] == pytest.approx(0.4)
+    assert row["selection_protocol"] == protocol
+
+    strict_row = _evaluate_selector(
+        selector_name="ronar",
+        bundle=bundle,
+        proposals=[],
+        top_k=5,
+        config={},
+    )
+    assert strict_row["top_k"] is None
+    assert strict_row["requested_top_k"] == 5
+    assert strict_row["point_precision"] == pytest.approx(0.4)
+    assert "point_precision_at_k" not in strict_row
+    assert "failed_segment_recall_at_k" not in strict_row
+
+
 def test_abc_aggregate_uses_pooled_peak_precision() -> None:
     rows = [
         {
@@ -372,3 +466,4 @@ def test_abc_aggregate_uses_pooled_peak_precision() -> None:
     assert stats["failed_segment_recall_at_k"] == pytest.approx(1 / 3)
     assert stats["point_precision_at_k"] == pytest.approx(2 / 9)
     assert stats["macro_point_precision_at_k"] == pytest.approx(0.2)
+    assert stats["mean_selected_events_per_trajectory"] == pytest.approx(4.5)

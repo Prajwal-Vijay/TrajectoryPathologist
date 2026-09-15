@@ -22,11 +22,17 @@ from pathologist.qa.robofac_selectors import (
     select_kite_flow_keyframes,
     select_uniform_keyframes,
 )
+from pathologist.qa.ronar_selector import (
+    RONAR_DEFAULT_SAMPLE_PERIOD_SEC,
+    RONAR_DEFAULT_THRESHOLD,
+    select_ronar_keyevents,
+)
 from pathologist.schemas.key_event import KeyEventProposal
 from pathologist.schemas.trajectory_bundle import CameraFrameRef, TrajectoryBundle
 
 
 DEFAULT_SELECTORS = ("uniform", "kite_flow", "metric")
+RONAR_SELECTORS = ("ronar", "ronar_k")
 ABC_CAMERA_NAMES = ("top", "left_wrist", "right_wrist")
 ABC_PRISM_SOURCE_METRICS = tuple(DEFAULT_SURPRISE_SOURCE_METRICS)
 ABC_VISUAL_FLOW_RESIZE = (128, 128)
@@ -72,6 +78,8 @@ def run_abc130k_eval_pipeline(
     robot_mask_box_threshold: float = 0.35,
     robot_mask_dilation_px: int = 8,
     robot_mask_cache_dir: str | Path | None = None,
+    ronar_sample_period_sec: float = RONAR_DEFAULT_SAMPLE_PERIOD_SEC,
+    ronar_threshold: float = RONAR_DEFAULT_THRESHOLD,
     one_per_task: bool = True,
     max_episodes: int | None = None,
     config_path: str | Path | None = None,
@@ -96,6 +104,10 @@ def run_abc130k_eval_pipeline(
         raise ValueError("robot_mask_dilation_px cannot be negative.")
     if bootstrap_samples < 0:
         raise ValueError("bootstrap_samples cannot be negative.")
+    if ronar_sample_period_sec <= 0:
+        raise ValueError("ronar_sample_period_sec must be positive.")
+    if ronar_threshold < 0:
+        raise ValueError("ronar_threshold cannot be negative.")
     resolved_selectors = _resolve_selectors(selectors)
     resolved_pad_selectors = _resolve_pad_selectors(pad_selectors)
     resolved_camera_names = _resolve_camera_names(camera_names)
@@ -184,6 +196,9 @@ def run_abc130k_eval_pipeline(
                 "one_per_task": one_per_task,
                 "prism_source_metrics": list(ABC_PRISM_SOURCE_METRICS),
                 "force_telemetry_used": False,
+                "ronar_sample_period_sec": ronar_sample_period_sec,
+                "ronar_threshold": ronar_threshold,
+                "ronar_normalization_scope": "within_trajectory",
             },
         )
     existing_rows = _read_jsonl(eval_path) if resume else []
@@ -245,6 +260,20 @@ def run_abc130k_eval_pipeline(
         ),
         "prism_source_metrics": list(ABC_PRISM_SOURCE_METRICS),
         "force_telemetry_used": False,
+        "ronar_sample_period_sec": ronar_sample_period_sec,
+        "ronar_threshold": ronar_threshold,
+        "ronar_normalization_scope": "within_trajectory",
+        "ronar": {
+            "requested": bool(set(RONAR_SELECTORS).intersection(resolved_selectors)),
+            "selectors": [
+                name for name in resolved_selectors if name in RONAR_SELECTORS
+            ],
+            "sample_period_sec": ronar_sample_period_sec,
+            "published_threshold": ronar_threshold,
+            "normalization_scope": "within_trajectory",
+            "planner_state_used": False,
+            "adjacent_clarity_used": False,
+        },
         "one_per_task": one_per_task,
         "annotated_episode_count": len(records),
         "failure_episode_count_before_task_deduplication": sum(
@@ -300,6 +329,9 @@ def run_abc130k_eval_pipeline(
                     top_k=top_k,
                     config=config,
                     pad_selectors=set(resolved_pad_selectors),
+                    ronar_camera_names=resolved_camera_names,
+                    ronar_sample_period_sec=ronar_sample_period_sec,
+                    ronar_threshold=ronar_threshold,
                 )
                 for name in resolved_selectors
             ]
@@ -442,7 +474,10 @@ def aggregate_abc130k_stats(
             if bootstrap_samples
             else {}
         )
-        output[selector_name] = {**point, "clustered_bootstrap_95ci": ci}
+        selector_stats = {**point, "clustered_bootstrap_95ci": ci}
+        if selector_name == "ronar":
+            selector_stats = _without_at_k_fields(selector_stats)
+        output[selector_name] = selector_stats
     output["failure_coverage"] = _failure_coverage(rows)
     if "metric" in by_selector:
         output["paired_differences"] = {
@@ -452,7 +487,7 @@ def aggregate_abc130k_stats(
                 bootstrap_samples=bootstrap_samples,
                 seed=seed,
             )
-            for baseline in ("uniform", "kite_flow")
+            for baseline in ("uniform", "kite_flow", "ronar_k")
             if baseline in by_selector
         }
     return output
@@ -466,8 +501,12 @@ def _evaluate_selector(
     top_k: int,
     config: dict[str, Any],
     pad_selectors: set[str] | None = None,
+    ronar_camera_names: list[str] | tuple[str, ...] | None = None,
+    ronar_sample_period_sec: float = RONAR_DEFAULT_SAMPLE_PERIOD_SEC,
+    ronar_threshold: float = RONAR_DEFAULT_THRESHOLD,
 ) -> dict[str, Any]:
     padded_selectors = pad_selectors or set()
+    selection_protocol: dict[str, Any] | None = None
     if selector_name == "metric":
         selected = [
             _proposal_peak(proposal, rank)
@@ -480,6 +519,26 @@ def _evaluate_selector(
                 bundle.camera_frames,
                 top_k,
             )
+    elif selector_name in RONAR_SELECTORS:
+        selection = select_ronar_keyevents(
+            bundle,
+            camera_names=ronar_camera_names,
+            sample_period_sec=ronar_sample_period_sec,
+            threshold=ronar_threshold,
+            normalization_stats=None,
+            frame_budget=top_k if selector_name == "ronar_k" else None,
+        )
+        selected = [
+            event.to_dict(rank)
+            for rank, event in enumerate(selection.events, start=1)
+        ]
+        selection_protocol = selection.metadata
+        method_selected_count = int(
+            selection.metadata.get(
+                "genuine_selected_event_count",
+                selection.metadata.get("genuine_crossing_count", len(selected)),
+            )
+        )
     else:
         frames: list[CameraFrameRef]
         kite_selection_stats: dict[str, Any] = {}
@@ -543,7 +602,7 @@ def _evaluate_selector(
     ]
     selected_count = len(peak_times)
     failure_count = len(failures)
-    return {
+    row = {
         "bundle_id": bundle.bundle_id,
         "task_name": bundle.raw_metadata.get("task_name"),
         "episode_path": str(bundle.root_path),
@@ -558,16 +617,32 @@ def _evaluate_selector(
         "point_precision_at_k": (
             len(matched_peak_times) / selected_count if selected_count else None
         ),
+        "point_precision": (
+            len(matched_peak_times) / selected_count if selected_count else None
+        ),
         "failed_segments": failures,
         "failed_segment_count": failure_count,
         "hit_failed_segment_count": len(matched_failures),
         "failed_segment_recall_at_k": (
             len(matched_failures) / failure_count if failure_count else None
         ),
+        "failed_segment_recall": (
+            len(matched_failures) / failure_count if failure_count else None
+        ),
         "episode_hit_at_k": bool(matched_failures) if failure_count else None,
+        "episode_hit": bool(matched_failures) if failure_count else None,
         "matched_peak_secs": matched_peak_times,
         "matched_failed_segments": matched_failures,
     }
+    if selection_protocol is not None:
+        row["selection_protocol"] = selection_protocol
+    if selector_name == "ronar":
+        row["requested_top_k"] = top_k
+        row["top_k"] = None
+        row.pop("point_precision_at_k", None)
+        row.pop("failed_segment_recall_at_k", None)
+        row.pop("episode_hit_at_k", None)
+    return row
 
 
 def _proposal_peak(proposal: KeyEventProposal, rank: int) -> dict[str, Any]:
@@ -652,37 +727,67 @@ def _contains(segment: dict[str, Any], peak_sec: float) -> bool:
 
 def _aggregate_rows(rows: list[dict[str, Any]]) -> dict[str, Any]:
     trajectory_count = len(rows)
-    episode_hits = sum(bool(row.get("episode_hit_at_k")) for row in rows)
+    episode_hits = sum(
+        bool(row.get("episode_hit", row.get("episode_hit_at_k")))
+        for row in rows
+    )
     failure_count = sum(int(row.get("failed_segment_count", 0)) for row in rows)
     failure_hits = sum(int(row.get("hit_failed_segment_count", 0)) for row in rows)
     peak_count = sum(int(row.get("selected_peak_count", 0)) for row in rows)
     peak_hits = sum(int(row.get("selected_peak_hit_count", 0)) for row in rows)
     macro_precision_values = [
-        float(row["point_precision_at_k"])
+        float(row.get("point_precision", row.get("point_precision_at_k")))
         for row in rows
-        if row.get("point_precision_at_k") is not None
+        if row.get("point_precision", row.get("point_precision_at_k")) is not None
     ]
     macro_recall_values = [
-        float(row["failed_segment_recall_at_k"])
+        float(
+            row.get(
+                "failed_segment_recall",
+                row.get("failed_segment_recall_at_k"),
+            )
+        )
         for row in rows
-        if row.get("failed_segment_recall_at_k") is not None
+        if row.get(
+            "failed_segment_recall",
+            row.get("failed_segment_recall_at_k"),
+        )
+        is not None
     ]
     return {
         "trajectory_count": trajectory_count,
         "episode_hits": episode_hits,
         "episode_recall_at_k": episode_hits / trajectory_count if trajectory_count else None,
+        "episode_recall": episode_hits / trajectory_count if trajectory_count else None,
         "failed_segment_count": failure_count,
         "failed_segment_hits": failure_hits,
         "failed_segment_recall_at_k": failure_hits / failure_count if failure_count else None,
         "selected_peak_count": peak_count,
         "selected_peak_hits": peak_hits,
+        "mean_selected_events_per_trajectory": (
+            peak_count / trajectory_count if trajectory_count else None
+        ),
+        "failed_segment_recall": (
+            failure_hits / failure_count if failure_count else None
+        ),
+        "point_precision": peak_hits / peak_count if peak_count else None,
         "point_precision_at_k": peak_hits / peak_count if peak_count else None,
         "macro_point_precision_at_k": (
             sum(macro_precision_values) / len(macro_precision_values)
             if macro_precision_values
             else None
         ),
+        "macro_point_precision": (
+            sum(macro_precision_values) / len(macro_precision_values)
+            if macro_precision_values
+            else None
+        ),
         "macro_failed_segment_recall_at_k": (
+            sum(macro_recall_values) / len(macro_recall_values)
+            if macro_recall_values
+            else None
+        ),
+        "macro_failed_segment_recall": (
             sum(macro_recall_values) / len(macro_recall_values)
             if macro_recall_values
             else None
@@ -702,10 +807,15 @@ def _bootstrap_rows(
     values: dict[str, list[float]] = defaultdict(list)
     keys = (
         "episode_recall_at_k",
+        "episode_recall",
         "failed_segment_recall_at_k",
+        "failed_segment_recall",
         "point_precision_at_k",
+        "point_precision",
         "macro_point_precision_at_k",
+        "macro_point_precision",
         "macro_failed_segment_recall_at_k",
+        "macro_failed_segment_recall",
     )
     for _ in range(bootstrap_samples):
         sample = [rows[rng.randrange(len(rows))] for _ in rows]
@@ -813,6 +923,18 @@ def _failure_coverage(rows: list[dict[str, Any]]) -> dict[str, Any]:
             sum(fractions) / len(fractions) if fractions else None
         ),
     }
+
+
+def _without_at_k_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_at_k_fields(item)
+            for key, item in value.items()
+            if "_at_k" not in key
+        }
+    if isinstance(value, list):
+        return [_without_at_k_fields(item) for item in value]
+    return value
 
 
 def _percentile_interval(values: list[float]) -> list[float] | None:
@@ -926,7 +1048,7 @@ def _resolve_selectors(
     output: list[str] = []
     for name in names:
         resolved = aliases.get(name, name)
-        if resolved not in DEFAULT_SELECTORS:
+        if resolved not in {*DEFAULT_SELECTORS, *RONAR_SELECTORS}:
             raise ValueError(f"Unsupported selector: {name}")
         if resolved not in output:
             output.append(resolved)
