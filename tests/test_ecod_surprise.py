@@ -79,7 +79,12 @@ def test_ecod_surprise_scorer_appends_score_metrics_with_aligned_timestamps() ->
     aggregate_metric = next(metric for metric in scored_profile.metrics if metric.name == "ecod_aggregate_score")
     assert [sample.timestamp_sec for sample in aggregate_metric.samples] == [0.0, 0.1, 0.2]
     assert aggregate_metric.metadata["score_formula"] == (
-        "O_i=max(sum_j U_l_ij, sum_j U_r_ij, sum_j U_skew_ij)"
+        "O_i=max(sum_g max_j_in_g U_l_ij, "
+        "sum_g max_j_in_g U_r_ij, "
+        "sum_g max_j_in_g U_skew_ij)"
+    )
+    assert aggregate_metric.metadata["aggregation_mode"] == (
+        "branchwise_group_max_then_sum"
     )
     assert aggregate_metric.metadata["feature_raw_skewness_sign"]["stalling"] == 1
     assert aggregate_metric.metadata["feature_skewness_sign"]["stalling"] == -1
@@ -97,6 +102,83 @@ def test_ecod_surprise_scorer_appends_score_metrics_with_aligned_timestamps() ->
         for index in range(3)
     ]
     assert [sample.value for sample in aggregate_metric.samples] == expected_scores
+
+
+def test_ecod_aggregate_maxes_metrics_within_each_group_per_tail() -> None:
+    velocity = _metric_with_values(
+        "velocity_spike",
+        [0.0, 1.0, 4.0, 2.0],
+    )
+    eef_velocity = _metric_with_values(
+        "eef_linear_velocity_spike",
+        [4.0, 1.0, 0.0, 2.0],
+    )
+    visual = _metric_with_values(
+        "visual_flow",
+        [1.0, 3.0, 2.0, 0.0],
+    )
+    scorer = ECODSurpriseScorer(
+        config={
+            "surprise": {
+                "source_metrics": [
+                    "velocity_spike",
+                    "eef_linear_velocity_spike",
+                    "visual_flow",
+                ]
+            }
+        }
+    )
+
+    scored = scorer.append_to_profile(
+        MetricProfile(
+            bundle_id="metric-groups",
+            metrics=[velocity, eef_velocity, visual],
+        )
+    )
+    aggregate = next(
+        metric
+        for metric in scored.metrics
+        if metric.name == "ecod_aggregate_score"
+    )
+    metadata = aggregate.metadata
+
+    assert metadata["aggregation_groups"] == {
+        "velocity": [
+            "velocity_spike",
+            "eef_linear_velocity_spike",
+        ],
+        "vision": ["visual_flow"],
+    }
+    for feature_key, group_key, aggregate_key in (
+        (
+            "feature_left_tail_scores",
+            "group_left_tail_scores",
+            "aggregate_left_tail_scores",
+        ),
+        (
+            "feature_right_tail_scores",
+            "group_right_tail_scores",
+            "aggregate_right_tail_scores",
+        ),
+        (
+            "feature_skew_tail_scores",
+            "group_skew_tail_scores",
+            "aggregate_skew_tail_scores",
+        ),
+    ):
+        velocity_group = [
+            max(
+                metadata[feature_key]["velocity_spike"][index],
+                metadata[feature_key]["eef_linear_velocity_spike"][index],
+            )
+            for index in range(4)
+        ]
+        assert metadata[group_key]["velocity"] == velocity_group
+        assert metadata[aggregate_key] == [
+            velocity_group[index]
+            + metadata[feature_key]["visual_flow"][index]
+            for index in range(4)
+        ]
 
 
 def test_ecod_surprise_maxes_group_scores_instead_of_combining_raw_vectors() -> None:
@@ -218,5 +300,17 @@ def _metric(name: str) -> MetricResult:
             MetricSample(timestamp_sec=0.0, value=1.0),
             MetricSample(timestamp_sec=0.1, value=2.0),
             MetricSample(timestamp_sec=0.2, value=4.0),
+        ],
+    )
+
+
+def _metric_with_values(name: str, values: list[float]) -> MetricResult:
+    return MetricResult(
+        name=name,
+        description=f"{name} source metric",
+        unit="source_unit",
+        samples=[
+            MetricSample(timestamp_sec=index * 0.1, value=value)
+            for index, value in enumerate(values)
         ],
     )

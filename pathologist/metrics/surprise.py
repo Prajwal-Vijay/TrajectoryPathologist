@@ -27,6 +27,30 @@ DEFAULT_SURPRISE_SOURCE_METRICS = [
     "audio_spectral_flux",
 ]
 
+DEFAULT_SURPRISE_AGGREGATION_GROUPS = {
+    "velocity": [
+        "velocity_spike",
+        "eef_linear_velocity_spike",
+        "eef_angular_velocity_spike",
+    ],
+    "stalling": [
+        "stalling",
+        "eef_translational_stalling",
+        "eef_rotational_stalling",
+    ],
+    "jerk": [
+        "motion_smoothness",
+        "eef_translational_jerk",
+        "eef_angular_jerk",
+    ],
+    "actuation": [
+        "action_discontinuity",
+        "gripper_aperture_speed",
+    ],
+    "vision": ["visual_flow"],
+    "audio": ["audio_spectral_flux"],
+}
+
 @dataclass(slots=True)
 class ECODScoreResult:
     """Per-sample ECOD-style score components for one scalar series."""
@@ -54,6 +78,13 @@ class ECODSurpriseScorer:
             for metric_name in source_metrics
             if isinstance(metric_name, str)
         ] or list(DEFAULT_SURPRISE_SOURCE_METRICS)
+        aggregation_groups = self.surprise_config.get(
+            "aggregation_groups",
+            DEFAULT_SURPRISE_AGGREGATION_GROUPS,
+        )
+        self.aggregation_groups = _parse_aggregation_groups(
+            aggregation_groups
+        )
         self.aggregate_metric_name = str(
             self.surprise_config.get("aggregate_metric_name", "ecod_aggregate_score")
         )
@@ -206,7 +237,7 @@ class ECODSurpriseScorer:
         )
 
     def score_aggregate_metric(self, profile: MetricProfile) -> MetricResult | None:
-        """Build the ECOD paper-style row score by summing feature scores."""
+        """Build a branchwise group-max ECOD aggregate score."""
 
         source_metrics = [
             metric
@@ -285,16 +316,45 @@ class ECODSurpriseScorer:
             per_feature_scores.append(
                 _scores_for_aggregate_tail_mode(scores, score_tail_mode)
             )
+        scores_by_metric = {
+            metric_name: score
+            for metric_name, score in zip(
+                aligned["metric_names"],
+                per_feature_scores,
+            )
+        }
+        active_aggregation_groups = _active_aggregation_groups(
+            aligned["metric_names"],
+            self.aggregation_groups,
+        )
+        group_scores = {
+            group_name: _max_component_scores(
+                {
+                    metric_name: scores_by_metric[metric_name]
+                    for metric_name in metric_names
+                }
+            )
+            for group_name, metric_names in active_aggregation_groups.items()
+        }
         aggregate_left_scores = [
-            sum(feature_score.left_tail_scores[index] for feature_score in per_feature_scores)
+            sum(
+                group_score.left_tail_scores[index]
+                for group_score in group_scores.values()
+            )
             for index in range(len(aligned["timestamps"]))
         ]
         aggregate_right_scores = [
-            sum(feature_score.right_tail_scores[index] for feature_score in per_feature_scores)
+            sum(
+                group_score.right_tail_scores[index]
+                for group_score in group_scores.values()
+            )
             for index in range(len(aligned["timestamps"]))
         ]
         aggregate_skew_scores = [
-            sum(feature_score.skew_tail_scores[index] for feature_score in per_feature_scores)
+            sum(
+                group_score.skew_tail_scores[index]
+                for group_score in group_scores.values()
+            )
             for index in range(len(aligned["timestamps"]))
         ]
         aggregate_scores = [
@@ -308,8 +368,9 @@ class ECODSurpriseScorer:
         return MetricResult(
             name=self.aggregate_metric_name,
             description=(
-                "ECOD-style aggregate trajectory-relative surprise score; each timestamp row "
-                "is scored by summing feature-wise ECOD outlier scores across configured metrics."
+                "ECOD-style aggregate trajectory-relative surprise score; each "
+                "tail branch takes a pointwise maximum within each configured "
+                "metric group, then sums across groups."
             ),
             unit="ecod_surprise",
             samples=[
@@ -323,7 +384,26 @@ class ECODSurpriseScorer:
             metadata={
                 "available": True,
                 "source_metric_names": aligned["metric_names"],
-                "score_formula": "O_i=max(sum_j U_l_ij, sum_j U_r_ij, sum_j U_skew_ij)",
+                "score_formula": (
+                    "O_i=max(sum_g max_j_in_g U_l_ij, "
+                    "sum_g max_j_in_g U_r_ij, "
+                    "sum_g max_j_in_g U_skew_ij)"
+                ),
+                "aggregation_mode": "branchwise_group_max_then_sum",
+                "aggregation_groups": active_aggregation_groups,
+                "configured_aggregation_groups": self.aggregation_groups,
+                "group_left_tail_scores": {
+                    group_name: score.left_tail_scores
+                    for group_name, score in group_scores.items()
+                },
+                "group_right_tail_scores": {
+                    group_name: score.right_tail_scores
+                    for group_name, score in group_scores.items()
+                },
+                "group_skew_tail_scores": {
+                    group_name: score.skew_tail_scores
+                    for group_name, score in group_scores.items()
+                },
                 "alignment": aligned["alignment"],
                 "epsilon": self.epsilon,
                 "aggregate_left_tail_scores": aggregate_left_scores,
@@ -364,6 +444,60 @@ class ECODSurpriseScorer:
                 ),
             },
         )
+
+
+def _parse_aggregation_groups(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    groups: dict[str, list[str]] = {}
+    assigned_metrics: dict[str, str] = {}
+    for raw_group_name, raw_metric_names in value.items():
+        if not isinstance(raw_group_name, str) or not raw_group_name.strip():
+            continue
+        if not isinstance(raw_metric_names, (list, tuple)):
+            continue
+        group_name = raw_group_name.strip()
+        metric_names: list[str] = []
+        for raw_metric_name in raw_metric_names:
+            if not isinstance(raw_metric_name, str) or not raw_metric_name.strip():
+                continue
+            metric_name = raw_metric_name.strip()
+            previous_group = assigned_metrics.get(metric_name)
+            if previous_group is not None and previous_group != group_name:
+                raise ValueError(
+                    f"Surprise metric {metric_name!r} belongs to both "
+                    f"{previous_group!r} and {group_name!r} aggregation groups."
+                )
+            assigned_metrics[metric_name] = group_name
+            if metric_name not in metric_names:
+                metric_names.append(metric_name)
+        if metric_names:
+            groups[group_name] = metric_names
+    return groups
+
+
+def _active_aggregation_groups(
+    metric_names: list[str],
+    configured_groups: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """Resolve available groups and preserve unconfigured metrics as singletons."""
+
+    available = set(metric_names)
+    active: dict[str, list[str]] = {}
+    assigned: set[str] = set()
+    for group_name, configured_metric_names in configured_groups.items():
+        members = [
+            metric_name
+            for metric_name in configured_metric_names
+            if metric_name in available
+        ]
+        if members:
+            active[group_name] = members
+            assigned.update(members)
+    for metric_name in metric_names:
+        if metric_name not in assigned:
+            active[f"ungrouped:{metric_name}"] = [metric_name]
+    return active
 
 
 def ecod_scores(

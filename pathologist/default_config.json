@@ -127,6 +127,29 @@
       "audio_spectral_flux"
     ],
     "aggregate_metric_name": "ecod_aggregate_score",
+    "aggregation_groups": {
+      "velocity": [
+        "velocity_spike",
+        "eef_linear_velocity_spike",
+        "eef_angular_velocity_spike"
+      ],
+      "stalling": [
+        "stalling",
+        "eef_translational_stalling",
+        "eef_rotational_stalling"
+      ],
+      "jerk": [
+        "motion_smoothness",
+        "eef_translational_jerk",
+        "eef_angular_jerk"
+      ],
+      "actuation": [
+        "action_discontinuity",
+        "gripper_aperture_speed"
+      ],
+      "vision": ["visual_flow"],
+      "audio": ["audio_spectral_flux"]
+    },
     "score_tail_overrides": {
       "stalling": "left",
       "eef_translational_stalling": "left",
