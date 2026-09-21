@@ -10,7 +10,7 @@ from statistics import median
 from typing import Any
 
 
-SELECTOR_ORDER = ("uniform", "kite_flow", "metric")
+SELECTOR_ORDER = ("uniform", "kite_flow", "ronar_k", "metric")
 CAMERA_ORDER = ("hand", "hama1", "hama2")
 
 
@@ -140,6 +140,36 @@ def load_viewer_dataset(output_dir: str | Path) -> ViewerDataset:
     ]
     bundles.sort(key=lambda bundle: (bundle.h5_path or "", bundle.bundle_id))
     return ViewerDataset(output_dir=resolved_output_dir, bundles=bundles, manifest=manifest)
+
+
+def overlay_selector_outputs(
+    dataset: ViewerDataset,
+    selector_output_dirs: dict[str, str | Path],
+) -> dict[str, int]:
+    """Replace selector rows with results loaded from other evaluation directories."""
+
+    bundles_by_id = {bundle.bundle_id: bundle for bundle in dataset.bundles}
+    loaded_counts: dict[str, int] = {}
+    for selector_name, output_dir in selector_output_dirs.items():
+        eval_path = Path(output_dir).expanduser().resolve() / "reassemble_eval.jsonl"
+        if not eval_path.is_file():
+            raise FileNotFoundError(
+                f"Missing REASSEMBLE eval JSONL for {selector_name}: {eval_path}"
+            )
+        loaded_count = 0
+        for row in _read_jsonl(eval_path):
+            if row.get("selector_name") != selector_name:
+                continue
+            bundle_id = row.get("bundle_id")
+            if not isinstance(bundle_id, str) or bundle_id not in bundles_by_id:
+                continue
+            for peak in _dict_list(row.get("selected_peaks")):
+                if peak.get("timeline_rank") is None and peak.get("rank") is not None:
+                    peak["timeline_rank"] = peak["rank"]
+            bundles_by_id[bundle_id].rows_by_selector[selector_name] = row
+            loaded_count += 1
+        loaded_counts[selector_name] = loaded_count
+    return loaded_counts
 
 
 def load_ecod_aggregate(output_dir: str | Path, bundle_id: str) -> dict[str, Any] | None:

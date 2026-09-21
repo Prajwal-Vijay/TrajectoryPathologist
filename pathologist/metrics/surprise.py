@@ -48,6 +48,13 @@ class ECODSurpriseScorer:
         self.surprise_config = surprise_config if isinstance(surprise_config, dict) else {}
         self.enabled = bool(self.surprise_config.get("enabled", True))
         self.epsilon = float(self.surprise_config.get("epsilon", 1e-12))
+        self.aggregation_reduction = str(
+            self.surprise_config.get("aggregation_reduction", "sum")
+        ).strip().lower()
+        if self.aggregation_reduction not in {"sum", "max"}:
+            raise ValueError(
+                "surprise.aggregation_reduction must be either 'sum' or 'max'"
+            )
         source_metrics = self.surprise_config.get("source_metrics", DEFAULT_SURPRISE_SOURCE_METRICS)
         self.source_metrics = [
             str(metric_name)
@@ -206,7 +213,7 @@ class ECODSurpriseScorer:
         )
 
     def score_aggregate_metric(self, profile: MetricProfile) -> MetricResult | None:
-        """Build the ECOD paper-style row score by summing feature scores."""
+        """Build an ECOD row score by reducing aligned feature scores."""
 
         source_metrics = [
             metric
@@ -285,16 +292,26 @@ class ECODSurpriseScorer:
             per_feature_scores.append(
                 _scores_for_aggregate_tail_mode(scores, score_tail_mode)
             )
+        reduction = sum if self.aggregation_reduction == "sum" else max
         aggregate_left_scores = [
-            sum(feature_score.left_tail_scores[index] for feature_score in per_feature_scores)
+            reduction(
+                feature_score.left_tail_scores[index]
+                for feature_score in per_feature_scores
+            )
             for index in range(len(aligned["timestamps"]))
         ]
         aggregate_right_scores = [
-            sum(feature_score.right_tail_scores[index] for feature_score in per_feature_scores)
+            reduction(
+                feature_score.right_tail_scores[index]
+                for feature_score in per_feature_scores
+            )
             for index in range(len(aligned["timestamps"]))
         ]
         aggregate_skew_scores = [
-            sum(feature_score.skew_tail_scores[index] for feature_score in per_feature_scores)
+            reduction(
+                feature_score.skew_tail_scores[index]
+                for feature_score in per_feature_scores
+            )
             for index in range(len(aligned["timestamps"]))
         ]
         aggregate_scores = [
@@ -308,8 +325,8 @@ class ECODSurpriseScorer:
         return MetricResult(
             name=self.aggregate_metric_name,
             description=(
-                "ECOD-style aggregate trajectory-relative surprise score; each timestamp row "
-                "is scored by summing feature-wise ECOD outlier scores across configured metrics."
+                "ECOD-style aggregate trajectory-relative surprise score; each timestamp "
+                f"row uses the {self.aggregation_reduction} of feature-wise ECOD scores."
             ),
             unit="ecod_surprise",
             samples=[
@@ -323,7 +340,12 @@ class ECODSurpriseScorer:
             metadata={
                 "available": True,
                 "source_metric_names": aligned["metric_names"],
-                "score_formula": "O_i=max(sum_j U_l_ij, sum_j U_r_ij, sum_j U_skew_ij)",
+                "score_formula": (
+                    "O_i=max(max_j U_l_ij, max_j U_r_ij, max_j U_skew_ij)"
+                    if self.aggregation_reduction == "max"
+                    else "O_i=max(sum_j U_l_ij, sum_j U_r_ij, sum_j U_skew_ij)"
+                ),
+                "aggregation_reduction": self.aggregation_reduction,
                 "alignment": aligned["alignment"],
                 "epsilon": self.epsilon,
                 "aggregate_left_tail_scores": aggregate_left_scores,

@@ -127,6 +127,7 @@
       "audio_spectral_flux"
     ],
     "aggregate_metric_name": "ecod_aggregate_score",
+    "aggregation_reduction": "max",
     "score_tail_overrides": {
       "stalling": "left",
       "eef_translational_stalling": "left",

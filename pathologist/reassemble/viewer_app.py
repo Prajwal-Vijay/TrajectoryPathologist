@@ -24,6 +24,7 @@ from pathologist.reassemble.viewer import (
     load_reassemble_telemetry_series_from_h5,
     load_viewer_dataset,
     nearest_frame,
+    overlay_selector_outputs,
 )
 
 
@@ -34,7 +35,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default="REASSEMBLE__outputs_persistence",
         help="Directory containing reassemble_eval.jsonl and reassemble_manifest.json.",
     )
+    parser.add_argument(
+        "--selector-output",
+        action="append",
+        default=[],
+        metavar="SELECTOR=DIR",
+        help=(
+            "Replace one selector's rows with reassemble_eval.jsonl from another "
+            "output directory. May be repeated."
+        ),
+    )
+    parser.add_argument(
+        "--aggregate-output-dir",
+        default=None,
+        help="Optional directory supplying ecod_aggregates/ while the base output supplies frames.",
+    )
     return parser
+
+
+def _parse_selector_output_args(values: list[str]) -> dict[str, Path]:
+    outputs: dict[str, Path] = {}
+    for value in values:
+        selector_name, separator, directory = value.partition("=")
+        selector_name = selector_name.strip()
+        directory = directory.strip()
+        if not separator or not selector_name or not directory:
+            raise ValueError(
+                f"Invalid --selector-output {value!r}; expected SELECTOR=DIR"
+            )
+        outputs[selector_name] = Path(directory).expanduser().resolve()
+    return outputs
 
 
 def main() -> None:
@@ -47,6 +77,11 @@ def main() -> None:
         ) from exc
 
     output_dir = Path(args.output_dir).expanduser().resolve()
+    aggregate_output_dir = (
+        Path(args.aggregate_output_dir).expanduser().resolve()
+        if args.aggregate_output_dir is not None
+        else output_dir
+    )
 
     st.set_page_config(
         page_title="REASSEMBLE Rapid Review",
@@ -58,6 +93,10 @@ def main() -> None:
 
     try:
         dataset = load_viewer_dataset(output_dir)
+        overlay_selector_outputs(
+            dataset,
+            _parse_selector_output_args(args.selector_output),
+        )
     except Exception as exc:
         st.error(f"Could not load REASSEMBLE outputs: {type(exc).__name__}: {exc}")
         return
@@ -76,7 +115,7 @@ def main() -> None:
             return
         selected_bundle = _batch_bundle_picker(st, filtered_bundles)
 
-        aggregate = load_ecod_aggregate(output_dir, selected_bundle.bundle_id)
+        aggregate = load_ecod_aggregate(aggregate_output_dir, selected_bundle.bundle_id)
         frame_index = build_camera_frame_index(output_dir, selected_bundle.source_file_bundle_id)
         offset = infer_full_timeline_offset_sec(selected_bundle)
 
@@ -232,6 +271,7 @@ def _inject_rapid_review_styles(st: Any) -> None:
         }
         .rr-badge-metric { color: #7a2524; background: #fbe8e5; }
         .rr-badge-kite_flow { color: #8a4a08; background: #fff0d8; }
+        .rr-badge-ronar_k { color: #2f6b29; background: #e5f3e2; }
         .rr-badge-uniform { color: #24547b; background: #e8f2fa; }
         .rr-failure { color: #9a3b38; font-weight: 600; }
         .rr-neutral { color: #747069; }
@@ -369,8 +409,8 @@ def _render_review_queue(
         """
         <div class="rr-reasoning">
           <strong>Selection reasoning</strong>
-          PRISM surfaces telemetry-surprise events for rapid inspection alongside uniform and
-          motion-only KITE baselines. Candidates below are ordered by trajectory time.
+          PRISM surfaces telemetry-surprise events alongside Uniform, motion-only KITE, and
+          multimodal RONAR-K baselines. Candidates below are ordered by trajectory time.
         </div>
         """,
         unsafe_allow_html=True,
@@ -478,6 +518,7 @@ def _selector_display_name(selector: str) -> str:
     return {
         "metric": "PRISM",
         "kite_flow": "KITE",
+        "ronar_k": "RONAR-K",
         "uniform": "Uniform",
     }.get(selector, selector.replace("_", " ").title())
 
@@ -631,7 +672,10 @@ def _render_preview_video_panel(
     if fps_key not in st.session_state:
         st.session_state[fps_key] = 15
     fps = max(2, int(st.session_state[fps_key]))
-    video_path = output_dir / "viewer_cache" / f"{safe_id}_fps{fps}.webm"
+    selector_key = "-".join(
+        selector for selector in SELECTOR_ORDER if selector in visible_selectors
+    ) or "none"
+    video_path = output_dir / "viewer_cache" / f"{safe_id}_{selector_key}_fps{fps}.webm"
     if video_path.is_file():
         st.video(str(video_path), format="video/webm", start_time=start_time)
         st.caption(
@@ -648,7 +692,7 @@ def _render_preview_video_panel(
     with controls[0]:
         st.slider("Preview FPS", min_value=2, max_value=15, step=1, key=fps_key)
     fps = max(2, int(st.session_state[fps_key]))
-    video_path = output_dir / "viewer_cache" / f"{safe_id}_fps{fps}.webm"
+    video_path = output_dir / "viewer_cache" / f"{safe_id}_{selector_key}_fps{fps}.webm"
     estimated_frames = int(duration_sec * fps) + 1
     with controls[1]:
         generate = st.button(
@@ -805,6 +849,32 @@ def _draw_preview_chart(
         2,
         cv2.LINE_AA,
     )
+    selector_colors = {
+        "uniform": (168, 120, 76),
+        "kite_flow": (24, 133, 245),
+        "ronar_k": (75, 162, 84),
+        "metric": (86, 87, 228),
+    }
+    legend_selectors = [
+        selector
+        for selector in visible_selectors
+        if bundle.peaks_by_selector.get(selector)
+    ]
+    legend_start = max(left + 460, right - 125 * len(legend_selectors))
+    for index, selector in enumerate(legend_selectors):
+        legend_x = legend_start + 125 * index
+        color = selector_colors.get(selector, (90, 90, 90))
+        cv2.circle(canvas, (legend_x, 19), 6, color, -1, cv2.LINE_AA)
+        cv2.putText(
+            canvas,
+            _selector_display_name(selector),
+            (legend_x + 10, 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            color,
+            1,
+            cv2.LINE_AA,
+        )
 
     timestamps, raw_scores, smoothed_scores = _aggregate_series(aggregate)
     values = raw_scores + smoothed_scores
@@ -858,7 +928,6 @@ def _draw_preview_chart(
     _draw_series(cv2, np, canvas, timestamps, raw_scores, x_at, y_at, (170, 170, 170), 1)
     _draw_series(cv2, np, canvas, timestamps, smoothed_scores, x_at, y_at, (25, 25, 25), 2)
 
-    selector_colors = {"uniform": (168, 120, 76), "kite_flow": (24, 133, 245), "metric": (86, 87, 228)}
     for selector in visible_selectors:
         color = selector_colors.get(selector, (90, 90, 90))
         for peak in bundle.peaks_by_selector.get(selector, []):
@@ -1218,7 +1287,12 @@ def _render_chart(
                 annotation_text=str(segment.get("text") or "failed low"),
                 annotation_position="top left",
             )
-    colors = {"uniform": "#4c78a8", "kite_flow": "#f58518", "metric": "#e45756"}
+    colors = {
+        "uniform": "#4c78a8",
+        "kite_flow": "#f58518",
+        "ronar_k": "#54a24b",
+        "metric": "#e45756",
+    }
     for selector in visible_selectors:
         peaks = bundle.peaks_by_selector.get(selector, [])
         if show_aggregate:

@@ -81,6 +81,7 @@ def test_ecod_surprise_scorer_appends_score_metrics_with_aligned_timestamps() ->
     assert aggregate_metric.metadata["score_formula"] == (
         "O_i=max(sum_j U_l_ij, sum_j U_r_ij, sum_j U_skew_ij)"
     )
+    assert aggregate_metric.metadata["aggregation_reduction"] == "sum"
     assert aggregate_metric.metadata["feature_raw_skewness_sign"]["stalling"] == 1
     assert aggregate_metric.metadata["feature_skewness_sign"]["stalling"] == -1
     assert aggregate_metric.metadata["feature_skewness_sign_overrides"]["stalling"] == -1
@@ -97,6 +98,61 @@ def test_ecod_surprise_scorer_appends_score_metrics_with_aligned_timestamps() ->
         for index in range(3)
     ]
     assert [sample.value for sample in aggregate_metric.samples] == expected_scores
+
+
+def test_ecod_surprise_supports_max_reduction_across_metrics() -> None:
+    profile = MetricProfile(
+        bundle_id="max-reduction",
+        metrics=[
+            _metric("action_discontinuity"),
+            MetricResult(
+                name="visual_flow",
+                description="visual flow source metric",
+                samples=[
+                    MetricSample(timestamp_sec=0.0, value=4.0),
+                    MetricSample(timestamp_sec=0.1, value=1.0),
+                    MetricSample(timestamp_sec=0.2, value=2.0),
+                ],
+            ),
+        ],
+    )
+    scorer = ECODSurpriseScorer(
+        config={
+            "surprise": {
+                "source_metrics": ["action_discontinuity", "visual_flow"],
+                "aggregation_reduction": "max",
+            }
+        }
+    )
+
+    aggregate = scorer.score_aggregate_metric(profile)
+
+    assert aggregate is not None
+    assert aggregate.metadata["aggregation_reduction"] == "max"
+    assert aggregate.metadata["score_formula"] == (
+        "O_i=max(max_j U_l_ij, max_j U_r_ij, max_j U_skew_ij)"
+    )
+    for index in range(3):
+        expected_left = max(
+            scores[index]
+            for scores in aggregate.metadata["feature_left_tail_scores"].values()
+        )
+        expected_right = max(
+            scores[index]
+            for scores in aggregate.metadata["feature_right_tail_scores"].values()
+        )
+        expected_skew = max(
+            scores[index]
+            for scores in aggregate.metadata["feature_skew_tail_scores"].values()
+        )
+        assert aggregate.metadata["aggregate_left_tail_scores"][index] == expected_left
+        assert aggregate.metadata["aggregate_right_tail_scores"][index] == expected_right
+        assert aggregate.metadata["aggregate_skew_tail_scores"][index] == expected_skew
+        assert aggregate.samples[index].value == max(
+            expected_left,
+            expected_right,
+            expected_skew,
+        )
 
 
 def test_ecod_surprise_maxes_group_scores_instead_of_combining_raw_vectors() -> None:

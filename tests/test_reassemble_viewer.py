@@ -17,6 +17,7 @@ from pathologist.reassemble.viewer import (
     load_reassemble_telemetry_series_from_h5,
     load_viewer_dataset,
     nearest_frame,
+    overlay_selector_outputs,
     sample_frames_evenly,
 )
 from pathologist.reassemble.evaluation import _load_resume_state
@@ -27,6 +28,7 @@ from pathologist.run_reassemble_success_viewer_prep import (
 from pathologist.reassemble.viewer_app import (
     _chronological_peaks,
     _format_timestamp,
+    _parse_selector_output_args,
     _peak_segment_context,
 )
 
@@ -57,6 +59,39 @@ def test_viewer_loads_ecod_aggregate_and_missing_aggregate(tmp_path: Path) -> No
     assert aggregate["timestamps_sec"] == [0.0, 1.0, 2.0]
     assert aggregate["selected_local_maxima"][0]["peak_sec"] == 1.0
     assert load_ecod_aggregate(output_dir, "missing") is None
+
+
+def test_viewer_overlays_selector_rows_from_another_output(tmp_path: Path) -> None:
+    output_dir = _write_viewer_fixture(tmp_path)
+    ronar_dir = tmp_path / "ronar"
+    ronar_dir.mkdir()
+    ronar_row = _eval_row(
+        "ronar_k",
+        [{"rank": 1, "peak_sec": 0.75}],
+    )
+    (ronar_dir / "reassemble_eval.jsonl").write_text(
+        json.dumps(ronar_row) + "\n",
+        encoding="utf-8",
+    )
+    dataset = load_viewer_dataset(output_dir)
+
+    counts = overlay_selector_outputs(dataset, {"ronar_k": ronar_dir})
+
+    bundle = dataset.bundles[0]
+    assert counts == {"ronar_k": 1}
+    assert bundle.selectors == ["uniform", "kite_flow", "ronar_k", "metric"]
+    assert bundle.peaks_by_selector["ronar_k"][0]["timeline_rank"] == 1
+
+
+def test_viewer_parses_selector_output_arguments(tmp_path: Path) -> None:
+    parsed = _parse_selector_output_args(
+        [f"metric={tmp_path / 'prism'}", f"ronar_k={tmp_path / 'ronar'}"]
+    )
+
+    assert parsed == {
+        "metric": (tmp_path / "prism").resolve(),
+        "ronar_k": (tmp_path / "ronar").resolve(),
+    }
 
 
 def test_viewer_loads_raw_telemetry_series_for_high_level_window(tmp_path: Path) -> None:
