@@ -341,13 +341,20 @@ def test_reassemble_ronar_calibration_reuses_compatible_cache(
     assert result["summary"]["status"] == "loaded_from_cache"
 
 
-def test_reassemble_camera_choice_updates_visual_flow_config() -> None:
-    config = {"metrics": {"visual_flow": {"camera_names": ["hand"], "resize": [128, 128]}}}
+def test_reassemble_camera_choice_updates_visual_metric_configs() -> None:
+    config = {
+        "metrics": {
+            "visual_flow": {"camera_names": ["hand"], "resize": [128, 128]},
+            "visual_patch_novelty": {"camera_names": ["hand"], "top_fraction": 0.02},
+        }
+    }
 
     _set_visual_flow_camera_names(config, ["hama1"])
 
     assert config["metrics"]["visual_flow"]["camera_names"] == ["hama1"]
     assert config["metrics"]["visual_flow"]["resize"] == [128, 128]
+    assert config["metrics"]["visual_patch_novelty"]["camera_names"] == ["hama1"]
+    assert config["metrics"]["visual_patch_novelty"]["top_fraction"] == 0.02
 
 
 def _proposal(event_id: str, peak_sec: float) -> KeyEventProposal:

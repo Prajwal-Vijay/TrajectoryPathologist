@@ -569,10 +569,10 @@ def _set_visual_flow_camera_names(config: dict[str, Any], camera_names: list[str
     metrics_config = config.setdefault("metrics", {})
     if not isinstance(metrics_config, dict):
         return
-    visual_flow_config = metrics_config.setdefault("visual_flow", {})
-    if not isinstance(visual_flow_config, dict):
-        return
-    visual_flow_config["camera_names"] = list(camera_names)
+    for metric_name in ("visual_flow", "visual_patch_novelty"):
+        visual_config = metrics_config.setdefault(metric_name, {})
+        if isinstance(visual_config, dict):
+            visual_config["camera_names"] = list(camera_names)
 
 
 def _configured_metric_ranking(config: dict[str, Any]) -> Any:

@@ -269,6 +269,8 @@ class VisualFlowMetric:
 
 def _max_across_camera_samples(
     samples_by_camera: dict[str, list[MetricSample]],
+    *,
+    sample_count_metadata_key: str = "camera_flow_sample_counts",
 ) -> tuple[list[MetricSample], list[str], dict[str, Any]]:
     camera_names = sorted(
         camera_name
@@ -283,7 +285,7 @@ def _max_across_camera_samples(
         return [], [], {
             "camera_aggregation": "max_after_linear_time_alignment",
             "camera_reference_timeline": None,
-            "camera_flow_sample_counts": sample_counts,
+            sample_count_metadata_key: sample_counts,
         }
     if len(camera_names) == 1:
         camera_name = camera_names[0]
@@ -291,7 +293,7 @@ def _max_across_camera_samples(
         return samples, [camera_name] * len(samples), {
             "camera_aggregation": "single_camera",
             "camera_reference_timeline": camera_name,
-            "camera_flow_sample_counts": sample_counts,
+            sample_count_metadata_key: sample_counts,
         }
 
     reference_camera = max(
@@ -330,7 +332,7 @@ def _max_across_camera_samples(
     return aggregated_samples, winning_camera_names, {
         "camera_aggregation": "max_after_linear_time_alignment",
         "camera_reference_timeline": reference_camera,
-        "camera_flow_sample_counts": sample_counts,
+        sample_count_metadata_key: sample_counts,
     }
 
 

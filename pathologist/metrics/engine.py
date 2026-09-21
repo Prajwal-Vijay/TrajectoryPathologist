@@ -34,6 +34,7 @@ from pathologist.metrics.signals import (
 from pathologist.metrics.surprise import ECODSurpriseScorer
 from pathologist.metrics.timing import TimestampRegularityMetric
 from pathologist.metrics.vision import VisualFlowMetric
+from pathologist.metrics.visual_novelty import FrozenDinoPatchNoveltyMetric
 from pathologist.schemas.metrics import MetricProfile
 from pathologist.schemas.trajectory_bundle import TrajectoryBundle
 
@@ -59,6 +60,7 @@ def default_metric_computers() -> list[MetricComputer]:
         EefAngularJerkMetric(),
         ForceNormMetric(),
         VisualFlowMetric(),
+        FrozenDinoPatchNoveltyMetric(),
         AudioSpectralFluxMetric(),
         GripperApertureSpeedMetric(),
         GripperTransitionMetric(),

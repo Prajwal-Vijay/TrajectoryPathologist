@@ -58,6 +58,16 @@
         "device": "auto"
       }
     },
+    "visual_patch_novelty": {
+      "enabled": true,
+      "camera_names": ["head"],
+      "model_id": "facebook/dinov2-small",
+      "sample_period_sec": 0.5,
+      "local_match_radius": 2,
+      "top_fraction": 0.02,
+      "batch_size": 16,
+      "device": "auto"
+    },
     "gripper_transition": {
       "gripper_binary_threshold": 0.5,
       "low_state_label": "closed",
@@ -106,6 +116,9 @@
         "frame_stride": 2,
         "resize": [128, 128],
         "spatial_aggregation": "mean"
+      },
+      "visual_patch_novelty": {
+        "camera_names": ["hama1", "hama2", "hand"]
       }
     }
   },
@@ -124,14 +137,16 @@
       "eef_angular_jerk",
       "gripper_aperture_speed",
       "visual_flow",
+      "visual_patch_novelty",
       "audio_spectral_flux"
     ],
     "aggregate_metric_name": "ecod_aggregate_score",
-    "aggregation_reduction": "max",
+    "aggregation_reduction": "sum",
     "score_tail_overrides": {
       "stalling": "left",
       "eef_translational_stalling": "left",
-      "eef_rotational_stalling": "left"
+      "eef_rotational_stalling": "left",
+      "visual_patch_novelty": "right"
     },
     "skewness_sign_overrides": {
       "stalling": -1
