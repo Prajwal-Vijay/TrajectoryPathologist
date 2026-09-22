@@ -168,31 +168,51 @@ def select_kite_flow_keyframes(
 
     Selection semantics are ported from ``m80hz/kite`` commit
     ``afead048974e5267087ef72ac2c54950995d6c5c``:
-    sample at a fixed stride, score consecutive sampled frames with Farneback flow,
-    min-max normalize the magnitudes, then greedily retain the strongest positions
-    separated by more than five sampled positions. When ``pad_to_budget`` is true and
-    NMS yields fewer than ``frame_budget`` frames, the remainder is sampled uniformly
-    over all other frames from the beginning to the end of the trajectory. The flow
-    resize defaults to 128x128 for runtime; official KITE uses 512x512.
+    select one coherent camera stream, sample at a fixed stride, score consecutive
+    sampled frames with Farneback flow, min-max normalize the magnitudes, then greedily
+    retain the strongest positions separated by more than five sampled positions. When
+    ``pad_to_budget`` is true and NMS yields fewer than ``frame_budget`` frames, the
+    remainder is sampled uniformly from the same camera stream. Official KITE uses
+    512x512 flow inputs.
     """
 
-    frames = sorted(frames, key=_frame_sort_key)
+    all_frames = sorted(frames, key=_frame_sort_key)
+    flow_config = {}
+    if config and isinstance(config.get("robofac_qa"), dict):
+        flow_config = config["robofac_qa"].get("kite_flow", {}) or {}
+    available_camera_names = sorted({frame.camera_name for frame in all_frames})
+    camera_name = _resolve_kite_camera_name(
+        available_camera_names,
+        flow_config.get("camera_name"),
+    )
+    frames = [
+        frame for frame in all_frames
+        if frame.camera_name == camera_name
+    ]
+    frame_stride = max(1, int(flow_config.get("frame_stride", 2)))
+    nms_radius = max(0, int(flow_config.get("nms_radius", 5)))
+    resize_width = int(flow_config.get("resize_width", 512))
+    resize_height = int(flow_config.get("resize_height", 512))
+    protocol_metadata = {
+        "protocol": "official_kite_single_camera",
+        "camera_name": camera_name,
+        "available_camera_names": available_camera_names,
+        "input_frame_count": len(all_frames),
+        "camera_frame_count": len(frames),
+        "frame_stride": frame_stride,
+        "nms_radius": nms_radius,
+        "resize": [resize_width, resize_height],
+    }
     if not frames:
         _record_fixed_budget_stats(
             selection_stats,
             method_frame_count=0,
             frame_budget=frame_budget,
             selected_frame_count=0,
+            metadata=protocol_metadata,
         )
         return []
     cv2 = _import_cv2()
-    flow_config = {}
-    if config and isinstance(config.get("robofac_qa"), dict):
-        flow_config = config["robofac_qa"].get("kite_flow", {}) or {}
-    frame_stride = max(1, int(flow_config.get("frame_stride", 2)))
-    nms_radius = max(0, int(flow_config.get("nms_radius", 5)))
-    resize_width = int(flow_config.get("resize_width", 128))
-    resize_height = int(flow_config.get("resize_height", 128))
 
     sampled_indices = list(range(0, len(frames), frame_stride))
     sampled_frames = [frames[index] for index in sampled_indices]
@@ -255,6 +275,7 @@ def select_kite_flow_keyframes(
         frame_budget=frame_budget,
         selected_frame_count=len(selected_frames),
         method_frame_keys=method_frame_keys,
+        metadata=protocol_metadata,
     )
     return selected_frames
 
@@ -304,6 +325,7 @@ def _record_fixed_budget_stats(
     frame_budget: int,
     selected_frame_count: int,
     method_frame_keys: list[tuple[str, int | None, float]] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     if selection_stats is None:
         return
@@ -317,8 +339,24 @@ def _record_fixed_budget_stats(
             "padded": padded > 0,
             "unfilled_frame_count": max(0, frame_budget - selected_frame_count),
             "method_frame_keys": method_frame_keys or [],
+            **(metadata or {}),
         }
     )
+
+
+def _resolve_kite_camera_name(
+    available_camera_names: list[str],
+    configured_camera_name: object,
+) -> str | None:
+    """Resolve one coherent camera stream for the official KITE baseline."""
+
+    if isinstance(configured_camera_name, str) and configured_camera_name:
+        return configured_camera_name
+    preferred_names = ("center", "centre", "top", "hama1", "head", "front")
+    for camera_name in preferred_names:
+        if camera_name in available_camera_names:
+            return camera_name
+    return available_camera_names[0] if available_camera_names else None
 
 
 def _representative_frame_for_proposal(

@@ -564,6 +564,7 @@ def _evaluate_selector(
                 tuple(key)
                 for key in kite_selection_stats.get("method_frame_keys", [])
             }
+            selection_protocol = kite_selection_stats
         else:
             raise ValueError(f"Unsupported ABC selector: {selector_name}")
         selected = [
@@ -1008,6 +1009,9 @@ def _abc_config_override(
         },
         "robofac_qa": {
             "kite_flow": {
+                "camera_name": (
+                    "top" if "top" in camera_names else camera_names[0]
+                ),
                 "frame_stride": kite_frame_stride,
             }
         },

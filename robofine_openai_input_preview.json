@@ -1,0 +1,197 @@
+{
+  "note": "Sanitized exact request preview. No OpenAI API call was made.",
+  "sample_id": "bridge-13687",
+  "selector": "metric",
+  "question_ids": [
+    "bridge-13687_q1",
+    "bridge-13687_q3",
+    "bridge-13687_q3__duplicate_2"
+  ],
+  "source_question_ids": [
+    "bridge-13687_q1",
+    "bridge-13687_q3",
+    "bridge-13687_q3"
+  ],
+  "selected_frames": [
+    {
+      "position": 0,
+      "camera_name": "image_0",
+      "timestamp_sec": 0.0,
+      "frame_index": 0,
+      "image_path": "/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000000_t0000.000.jpg"
+    },
+    {
+      "position": 1,
+      "camera_name": "image_0",
+      "timestamp_sec": 1.0,
+      "frame_index": 5,
+      "image_path": "/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000005_t0001.000.jpg"
+    },
+    {
+      "position": 2,
+      "camera_name": "image_0",
+      "timestamp_sec": 1.399999976158142,
+      "frame_index": 7,
+      "image_path": "/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000007_t0001.400.jpg"
+    },
+    {
+      "position": 3,
+      "camera_name": "image_0",
+      "timestamp_sec": 1.7999999523162842,
+      "frame_index": 9,
+      "image_path": "/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000009_t0001.800.jpg"
+    },
+    {
+      "position": 4,
+      "camera_name": "image_0",
+      "timestamp_sec": 2.200000047683716,
+      "frame_index": 11,
+      "image_path": "/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000011_t0002.200.jpg"
+    },
+    {
+      "position": 5,
+      "camera_name": "image_0",
+      "timestamp_sec": 3.0,
+      "frame_index": 15,
+      "image_path": "/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000015_t0003.000.jpg"
+    },
+    {
+      "position": 6,
+      "camera_name": "image_0",
+      "timestamp_sec": 3.5999999046325684,
+      "frame_index": 18,
+      "image_path": "/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000018_t0003.600.jpg"
+    },
+    {
+      "position": 7,
+      "camera_name": "image_0",
+      "timestamp_sec": 4.800000190734863,
+      "frame_index": 24,
+      "image_path": "/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000024_t0004.800.jpg"
+    },
+    {
+      "position": 8,
+      "camera_name": "image_0",
+      "timestamp_sec": 5.599999904632568,
+      "frame_index": 28,
+      "image_path": "/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000028_t0005.600.jpg"
+    },
+    {
+      "position": 9,
+      "camera_name": "image_0",
+      "timestamp_sec": 6.400000095367432,
+      "frame_index": 32,
+      "image_path": "/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000032_t0006.400.jpg"
+    }
+  ],
+  "openai_request": {
+    "model": "gpt-5.4",
+    "input": [
+      {
+        "role": "system",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "You are an expert robot manipulation video analyst. You will be shown frames from a robot manipulation video with one or more camera views. Each view is labeled (e.g., [View: head_rgb], [View: left_wrist_rgb]). Use information from ALL views to answer the questions. Answer based ONLY on what you observe in the video frames. Be precise and concise."
+          }
+        ]
+      },
+      {
+        "role": "user",
+        "content": [
+          {
+            "type": "input_text",
+            "text": "[View: image_0]"
+          },
+          {
+            "type": "input_image",
+            "image_url": "<base64 JPEG omitted; source=/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000000_t0000.000.jpg; bytes=32287>"
+          },
+          {
+            "type": "input_text",
+            "text": "[View: image_0]"
+          },
+          {
+            "type": "input_image",
+            "image_url": "<base64 JPEG omitted; source=/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000005_t0001.000.jpg; bytes=30560>"
+          },
+          {
+            "type": "input_text",
+            "text": "[View: image_0]"
+          },
+          {
+            "type": "input_image",
+            "image_url": "<base64 JPEG omitted; source=/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000007_t0001.400.jpg; bytes=29626>"
+          },
+          {
+            "type": "input_text",
+            "text": "[View: image_0]"
+          },
+          {
+            "type": "input_image",
+            "image_url": "<base64 JPEG omitted; source=/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000009_t0001.800.jpg; bytes=29830>"
+          },
+          {
+            "type": "input_text",
+            "text": "[View: image_0]"
+          },
+          {
+            "type": "input_image",
+            "image_url": "<base64 JPEG omitted; source=/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000011_t0002.200.jpg; bytes=31382>"
+          },
+          {
+            "type": "input_text",
+            "text": "[View: image_0]"
+          },
+          {
+            "type": "input_image",
+            "image_url": "<base64 JPEG omitted; source=/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000015_t0003.000.jpg; bytes=31583>"
+          },
+          {
+            "type": "input_text",
+            "text": "[View: image_0]"
+          },
+          {
+            "type": "input_image",
+            "image_url": "<base64 JPEG omitted; source=/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000018_t0003.600.jpg; bytes=31205>"
+          },
+          {
+            "type": "input_text",
+            "text": "[View: image_0]"
+          },
+          {
+            "type": "input_image",
+            "image_url": "<base64 JPEG omitted; source=/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000024_t0004.800.jpg; bytes=32237>"
+          },
+          {
+            "type": "input_text",
+            "text": "[View: image_0]"
+          },
+          {
+            "type": "input_image",
+            "image_url": "<base64 JPEG omitted; source=/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000028_t0005.600.jpg; bytes=31850>"
+          },
+          {
+            "type": "input_text",
+            "text": "[View: image_0]"
+          },
+          {
+            "type": "input_image",
+            "image_url": "<base64 JPEG omitted; source=/home/helen/Documents/TrajectoryPathologist/robofine_outputs_persistence_3/frame_cache/bridge-13687/000032_t0006.400.jpg; bytes=31486>"
+          },
+          {
+            "type": "input_text",
+            "text": "Watch the video frames carefully and answer ALL of the following questions about this robot manipulation video.\n\n[Q1] [bridge-13687_q1] (multiple_choice) What does the gripper do immediately before the cloth starts moving?\n  A. Grasp the cloth at a corner\n  B. Move to the blue cloth from above\n  C. Lift the cloth off the table\n  D. Rotate above the cloth\n\n[Q2] [bridge-13687_q3] (multiple_choice) Which object is shifted slightly when the cloth touches it during the drag?\n  A. toy mushroom\n  B. plastic bottle\n  C. soda can\n  D. metal spoon\n\n[Q3] [bridge-13687_q3__duplicate_2] (multiple_choice) DId the gripper grasp the towel?\n  A. No\n  B. \n  C. Yes\n  D. \n\nYou MUST return your answers as a JSON object. Use the FULL question_id shown in brackets [] as the key (NOT the short Q1/Q2 label):\n\n{\"answers\": {\"<full_question_id>\": \"<your_answer>\", ...}}\n\nRules:\n-- For yes_no questions: answer EXACTLY \"yes\" or \"no\"\n-- For number questions: answer with JUST a number (e.g. \"3\")\n-- For multiple_choice questions: answer with JUST the option letter (e.g. \"B\")\n-- Do NOT include explanations in the JSON values --- only the short answer\n-- You MUST answer ALL questions"
+          }
+        ]
+      }
+    ],
+    "max_output_tokens": 2048,
+    "temperature": 0.0
+  },
+  "shuffled_correct_letters_for_scoring_only_not_sent": {
+    "bridge-13687_q1": "B",
+    "bridge-13687_q3": "A",
+    "bridge-13687_q3__duplicate_2": "A"
+  }
+}

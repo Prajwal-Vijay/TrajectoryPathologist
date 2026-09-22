@@ -11,6 +11,7 @@ import pytest
 
 from pathologist.adapters.reassemble_bundle import ReassembleBundleAdapter
 from pathologist.reassemble.evaluation import (
+    REASSEMBLE_CONFIG_OVERRIDE,
     _configured_metric_ranking,
     _empty_stats_bucket,
     _evaluation_row,
@@ -42,6 +43,13 @@ def test_reassemble_cli_accepts_persistence_metric_ranking() -> None:
 
     assert args.metric_ranking == "persistence"
     assert args.frame_cache_dir == "shared_frames"
+
+
+def test_reassemble_kite_defaults_to_central_hama1_camera() -> None:
+    assert (
+        REASSEMBLE_CONFIG_OVERRIDE["robofac_qa"]["kite_flow"]["camera_name"]
+        == "hama1"
+    )
 
 
 def test_reassemble_cli_accepts_both_ronar_protocols() -> None:

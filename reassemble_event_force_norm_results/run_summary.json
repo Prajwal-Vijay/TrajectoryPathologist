@@ -1,0 +1,1176 @@
+{
+  "status": "complete",
+  "peaks_dir": "/home/helen/Documents/TrajectoryPathologist/REASSEMBLE_Successful_Balanced_force_norm",
+  "annotations_path": "/home/helen/Documents/TrajectoryPathologist/REASSEMBLE_Successful_Balanced/annotations.txt",
+  "output_dir": "/home/helen/Documents/TrajectoryPathologist/reassemble_event_force_norm_results",
+  "selectors": [
+    "uniform",
+    "kite_flow",
+    "metric"
+  ],
+  "cameras": [
+    "hama1",
+    "hand"
+  ],
+  "labels": [
+    "approach",
+    "first contact",
+    "gripper close",
+    "gripper open",
+    "active push",
+    "active pull",
+    "engaged rotation"
+  ],
+  "context_frames": 0,
+  "context_offset_sec": 0.4,
+  "frames_per_query": 2,
+  "primary_tolerance_sec": 5.0,
+  "tolerance_sweep_sec": [
+    1.0,
+    2.0,
+    5.0
+  ],
+  "bootstrap_samples": 10000,
+  "score_every": 0,
+  "score_only": false,
+  "skip_vlm": true,
+  "resume": false,
+  "openai_model": null,
+  "annotated_demo_count": 49,
+  "evaluated_demo_count": 49,
+  "demos_missing_from_manifest": [],
+  "prediction_count": 735,
+  "vlm_error_count": 0,
+  "skipped_peak_count": 0,
+  "skipped_peaks": [],
+  "annotation_parse_note_count": 22,
+  "stats": {
+    "labels": [
+      "approach",
+      "first contact",
+      "gripper close",
+      "gripper open",
+      "active push",
+      "active pull",
+      "engaged rotation"
+    ],
+    "primary_tolerance_sec": 5.0,
+    "tolerances_sec": [
+      1.0,
+      2.0,
+      5.0
+    ],
+    "bootstrap_samples": 10000,
+    "annotated_event_count": 165,
+    "annotated_demo_count": 49,
+    "ground_truth_label_counts": {
+      "approach": 39,
+      "first contact": 37,
+      "active push": 18,
+      "gripper open": 22,
+      "gripper close": 18,
+      "engaged rotation": 11,
+      "active pull": 20
+    },
+    "by_selector": {
+      "kite_flow": {
+        "frame_count": 245,
+        "demo_count": 49,
+        "unparsed_prediction_count": 245,
+        "by_tolerance": {
+          "1": {
+            "tolerance_sec": 1.0,
+            "frame_count": 245,
+            "matched_frame_count": 76,
+            "tied_match_frame_count": 10,
+            "match_rate": 0.31020408163265306,
+            "correct_count": 0,
+            "conditional_accuracy": 0.0,
+            "end_to_end_accuracy": 0.0,
+            "annotated_event_count": 165,
+            "hit_event_count": 45,
+            "event_recall_at_k": 0.2727272727272727,
+            "chance_accuracy": 0.14285714285714285,
+            "majority_class_accuracy": 0.5131578947368421,
+            "majority_class_label": "approach",
+            "per_class": {
+              "approach": {
+                "matched_frame_count": 39,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 39
+                }
+              },
+              "first contact": {
+                "matched_frame_count": 18,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 18
+                }
+              },
+              "gripper close": {
+                "matched_frame_count": 5,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 5
+                }
+              },
+              "gripper open": {
+                "matched_frame_count": 6,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 6
+                }
+              },
+              "active push": {
+                "matched_frame_count": 5,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 5
+                }
+              },
+              "active pull": {
+                "matched_frame_count": 3,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 3
+                }
+              },
+              "engaged rotation": {
+                "matched_frame_count": 0,
+                "correct_count": 0,
+                "accuracy": null,
+                "predictions": {}
+              }
+            },
+            "clustered_bootstrap_95ci": {
+              "cluster_unit": "demo_id",
+              "cluster_count": 49,
+              "match_rate": {
+                "lower_2_5": 0.22857142857142856,
+                "upper_97_5": 0.39591836734693875
+              },
+              "conditional_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              },
+              "end_to_end_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              }
+            }
+          },
+          "2": {
+            "tolerance_sec": 2.0,
+            "frame_count": 245,
+            "matched_frame_count": 132,
+            "tied_match_frame_count": 12,
+            "match_rate": 0.5387755102040817,
+            "correct_count": 0,
+            "conditional_accuracy": 0.0,
+            "end_to_end_accuracy": 0.0,
+            "annotated_event_count": 165,
+            "hit_event_count": 58,
+            "event_recall_at_k": 0.3515151515151515,
+            "chance_accuracy": 0.14285714285714285,
+            "majority_class_accuracy": 0.5378787878787878,
+            "majority_class_label": "approach",
+            "per_class": {
+              "approach": {
+                "matched_frame_count": 71,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 71
+                }
+              },
+              "first contact": {
+                "matched_frame_count": 26,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 26
+                }
+              },
+              "gripper close": {
+                "matched_frame_count": 10,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 10
+                }
+              },
+              "gripper open": {
+                "matched_frame_count": 12,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 12
+                }
+              },
+              "active push": {
+                "matched_frame_count": 7,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 7
+                }
+              },
+              "active pull": {
+                "matched_frame_count": 5,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 5
+                }
+              },
+              "engaged rotation": {
+                "matched_frame_count": 1,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 1
+                }
+              }
+            },
+            "clustered_bootstrap_95ci": {
+              "cluster_unit": "demo_id",
+              "cluster_count": 49,
+              "match_rate": {
+                "lower_2_5": 0.43673469387755104,
+                "upper_97_5": 0.636734693877551
+              },
+              "conditional_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              },
+              "end_to_end_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              }
+            }
+          },
+          "5": {
+            "tolerance_sec": 5.0,
+            "frame_count": 245,
+            "matched_frame_count": 206,
+            "tied_match_frame_count": 20,
+            "match_rate": 0.8408163265306122,
+            "correct_count": 0,
+            "conditional_accuracy": 0.0,
+            "end_to_end_accuracy": 0.0,
+            "annotated_event_count": 165,
+            "hit_event_count": 76,
+            "event_recall_at_k": 0.46060606060606063,
+            "chance_accuracy": 0.14285714285714285,
+            "majority_class_accuracy": 0.5533980582524272,
+            "majority_class_label": "approach",
+            "per_class": {
+              "approach": {
+                "matched_frame_count": 114,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 114
+                }
+              },
+              "first contact": {
+                "matched_frame_count": 37,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 37
+                }
+              },
+              "gripper close": {
+                "matched_frame_count": 10,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 10
+                }
+              },
+              "gripper open": {
+                "matched_frame_count": 25,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 25
+                }
+              },
+              "active push": {
+                "matched_frame_count": 12,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 12
+                }
+              },
+              "active pull": {
+                "matched_frame_count": 6,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 6
+                }
+              },
+              "engaged rotation": {
+                "matched_frame_count": 2,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 2
+                }
+              }
+            },
+            "clustered_bootstrap_95ci": {
+              "cluster_unit": "demo_id",
+              "cluster_count": 49,
+              "match_rate": {
+                "lower_2_5": 0.7510204081632653,
+                "upper_97_5": 0.9224489795918367
+              },
+              "conditional_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              },
+              "end_to_end_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              }
+            }
+          }
+        },
+        "primary": {
+          "tolerance_sec": 5.0,
+          "frame_count": 245,
+          "matched_frame_count": 206,
+          "tied_match_frame_count": 20,
+          "match_rate": 0.8408163265306122,
+          "correct_count": 0,
+          "conditional_accuracy": 0.0,
+          "end_to_end_accuracy": 0.0,
+          "annotated_event_count": 165,
+          "hit_event_count": 76,
+          "event_recall_at_k": 0.46060606060606063,
+          "chance_accuracy": 0.14285714285714285,
+          "majority_class_accuracy": 0.5533980582524272,
+          "majority_class_label": "approach",
+          "per_class": {
+            "approach": {
+              "matched_frame_count": 114,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 114
+              }
+            },
+            "first contact": {
+              "matched_frame_count": 37,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 37
+              }
+            },
+            "gripper close": {
+              "matched_frame_count": 10,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 10
+              }
+            },
+            "gripper open": {
+              "matched_frame_count": 25,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 25
+              }
+            },
+            "active push": {
+              "matched_frame_count": 12,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 12
+              }
+            },
+            "active pull": {
+              "matched_frame_count": 6,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 6
+              }
+            },
+            "engaged rotation": {
+              "matched_frame_count": 2,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 2
+              }
+            }
+          },
+          "clustered_bootstrap_95ci": {
+            "cluster_unit": "demo_id",
+            "cluster_count": 49,
+            "match_rate": {
+              "lower_2_5": 0.7510204081632653,
+              "upper_97_5": 0.9224489795918367
+            },
+            "conditional_accuracy": {
+              "lower_2_5": 0.0,
+              "upper_97_5": 0.0
+            },
+            "end_to_end_accuracy": {
+              "lower_2_5": 0.0,
+              "upper_97_5": 0.0
+            }
+          }
+        }
+      },
+      "metric": {
+        "frame_count": 245,
+        "demo_count": 49,
+        "unparsed_prediction_count": 245,
+        "by_tolerance": {
+          "1": {
+            "tolerance_sec": 1.0,
+            "frame_count": 245,
+            "matched_frame_count": 77,
+            "tied_match_frame_count": 8,
+            "match_rate": 0.3142857142857143,
+            "correct_count": 0,
+            "conditional_accuracy": 0.0,
+            "end_to_end_accuracy": 0.0,
+            "annotated_event_count": 165,
+            "hit_event_count": 81,
+            "event_recall_at_k": 0.4909090909090909,
+            "chance_accuracy": 0.14285714285714285,
+            "majority_class_accuracy": 0.36363636363636365,
+            "majority_class_label": "approach",
+            "per_class": {
+              "approach": {
+                "matched_frame_count": 28,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 28
+                }
+              },
+              "first contact": {
+                "matched_frame_count": 18,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 18
+                }
+              },
+              "gripper close": {
+                "matched_frame_count": 3,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 3
+                }
+              },
+              "gripper open": {
+                "matched_frame_count": 10,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 10
+                }
+              },
+              "active push": {
+                "matched_frame_count": 6,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 6
+                }
+              },
+              "active pull": {
+                "matched_frame_count": 9,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 9
+                }
+              },
+              "engaged rotation": {
+                "matched_frame_count": 3,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 3
+                }
+              }
+            },
+            "clustered_bootstrap_95ci": {
+              "cluster_unit": "demo_id",
+              "cluster_count": 49,
+              "match_rate": {
+                "lower_2_5": 0.2530612244897959,
+                "upper_97_5": 0.3795918367346939
+              },
+              "conditional_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              },
+              "end_to_end_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              }
+            }
+          },
+          "2": {
+            "tolerance_sec": 2.0,
+            "frame_count": 245,
+            "matched_frame_count": 126,
+            "tied_match_frame_count": 14,
+            "match_rate": 0.5142857142857142,
+            "correct_count": 0,
+            "conditional_accuracy": 0.0,
+            "end_to_end_accuracy": 0.0,
+            "annotated_event_count": 165,
+            "hit_event_count": 110,
+            "event_recall_at_k": 0.6666666666666666,
+            "chance_accuracy": 0.14285714285714285,
+            "majority_class_accuracy": 0.3492063492063492,
+            "majority_class_label": "approach",
+            "per_class": {
+              "approach": {
+                "matched_frame_count": 44,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 44
+                }
+              },
+              "first contact": {
+                "matched_frame_count": 33,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 33
+                }
+              },
+              "gripper close": {
+                "matched_frame_count": 5,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 5
+                }
+              },
+              "gripper open": {
+                "matched_frame_count": 14,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 14
+                }
+              },
+              "active push": {
+                "matched_frame_count": 7,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 7
+                }
+              },
+              "active pull": {
+                "matched_frame_count": 17,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 17
+                }
+              },
+              "engaged rotation": {
+                "matched_frame_count": 6,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 6
+                }
+              }
+            },
+            "clustered_bootstrap_95ci": {
+              "cluster_unit": "demo_id",
+              "cluster_count": 49,
+              "match_rate": {
+                "lower_2_5": 0.4448979591836735,
+                "upper_97_5": 0.5836734693877551
+              },
+              "conditional_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              },
+              "end_to_end_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              }
+            }
+          },
+          "5": {
+            "tolerance_sec": 5.0,
+            "frame_count": 245,
+            "matched_frame_count": 204,
+            "tied_match_frame_count": 18,
+            "match_rate": 0.8326530612244898,
+            "correct_count": 0,
+            "conditional_accuracy": 0.0,
+            "end_to_end_accuracy": 0.0,
+            "annotated_event_count": 165,
+            "hit_event_count": 140,
+            "event_recall_at_k": 0.8484848484848485,
+            "chance_accuracy": 0.14285714285714285,
+            "majority_class_accuracy": 0.3627450980392157,
+            "majority_class_label": "approach",
+            "per_class": {
+              "approach": {
+                "matched_frame_count": 74,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 74
+                }
+              },
+              "first contact": {
+                "matched_frame_count": 52,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 52
+                }
+              },
+              "gripper close": {
+                "matched_frame_count": 7,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 7
+                }
+              },
+              "gripper open": {
+                "matched_frame_count": 21,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 21
+                }
+              },
+              "active push": {
+                "matched_frame_count": 18,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 18
+                }
+              },
+              "active pull": {
+                "matched_frame_count": 19,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 19
+                }
+              },
+              "engaged rotation": {
+                "matched_frame_count": 13,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 13
+                }
+              }
+            },
+            "clustered_bootstrap_95ci": {
+              "cluster_unit": "demo_id",
+              "cluster_count": 49,
+              "match_rate": {
+                "lower_2_5": 0.7755102040816326,
+                "upper_97_5": 0.8857142857142857
+              },
+              "conditional_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              },
+              "end_to_end_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              }
+            }
+          }
+        },
+        "primary": {
+          "tolerance_sec": 5.0,
+          "frame_count": 245,
+          "matched_frame_count": 204,
+          "tied_match_frame_count": 18,
+          "match_rate": 0.8326530612244898,
+          "correct_count": 0,
+          "conditional_accuracy": 0.0,
+          "end_to_end_accuracy": 0.0,
+          "annotated_event_count": 165,
+          "hit_event_count": 140,
+          "event_recall_at_k": 0.8484848484848485,
+          "chance_accuracy": 0.14285714285714285,
+          "majority_class_accuracy": 0.3627450980392157,
+          "majority_class_label": "approach",
+          "per_class": {
+            "approach": {
+              "matched_frame_count": 74,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 74
+              }
+            },
+            "first contact": {
+              "matched_frame_count": 52,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 52
+              }
+            },
+            "gripper close": {
+              "matched_frame_count": 7,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 7
+              }
+            },
+            "gripper open": {
+              "matched_frame_count": 21,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 21
+              }
+            },
+            "active push": {
+              "matched_frame_count": 18,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 18
+              }
+            },
+            "active pull": {
+              "matched_frame_count": 19,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 19
+              }
+            },
+            "engaged rotation": {
+              "matched_frame_count": 13,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 13
+              }
+            }
+          },
+          "clustered_bootstrap_95ci": {
+            "cluster_unit": "demo_id",
+            "cluster_count": 49,
+            "match_rate": {
+              "lower_2_5": 0.7755102040816326,
+              "upper_97_5": 0.8857142857142857
+            },
+            "conditional_accuracy": {
+              "lower_2_5": 0.0,
+              "upper_97_5": 0.0
+            },
+            "end_to_end_accuracy": {
+              "lower_2_5": 0.0,
+              "upper_97_5": 0.0
+            }
+          }
+        }
+      },
+      "uniform": {
+        "frame_count": 245,
+        "demo_count": 49,
+        "unparsed_prediction_count": 245,
+        "by_tolerance": {
+          "1": {
+            "tolerance_sec": 1.0,
+            "frame_count": 245,
+            "matched_frame_count": 40,
+            "tied_match_frame_count": 4,
+            "match_rate": 0.16326530612244897,
+            "correct_count": 0,
+            "conditional_accuracy": 0.0,
+            "end_to_end_accuracy": 0.0,
+            "annotated_event_count": 165,
+            "hit_event_count": 47,
+            "event_recall_at_k": 0.28484848484848485,
+            "chance_accuracy": 0.14285714285714285,
+            "majority_class_accuracy": 0.275,
+            "majority_class_label": "first contact",
+            "per_class": {
+              "approach": {
+                "matched_frame_count": 9,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 9
+                }
+              },
+              "first contact": {
+                "matched_frame_count": 11,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 11
+                }
+              },
+              "gripper close": {
+                "matched_frame_count": 1,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 1
+                }
+              },
+              "gripper open": {
+                "matched_frame_count": 10,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 10
+                }
+              },
+              "active push": {
+                "matched_frame_count": 0,
+                "correct_count": 0,
+                "accuracy": null,
+                "predictions": {}
+              },
+              "active pull": {
+                "matched_frame_count": 3,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 3
+                }
+              },
+              "engaged rotation": {
+                "matched_frame_count": 6,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 6
+                }
+              }
+            },
+            "clustered_bootstrap_95ci": {
+              "cluster_unit": "demo_id",
+              "cluster_count": 49,
+              "match_rate": {
+                "lower_2_5": 0.11836734693877551,
+                "upper_97_5": 0.20816326530612245
+              },
+              "conditional_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              },
+              "end_to_end_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              }
+            }
+          },
+          "2": {
+            "tolerance_sec": 2.0,
+            "frame_count": 245,
+            "matched_frame_count": 103,
+            "tied_match_frame_count": 10,
+            "match_rate": 0.4204081632653061,
+            "correct_count": 0,
+            "conditional_accuracy": 0.0,
+            "end_to_end_accuracy": 0.0,
+            "annotated_event_count": 165,
+            "hit_event_count": 111,
+            "event_recall_at_k": 0.6727272727272727,
+            "chance_accuracy": 0.14285714285714285,
+            "majority_class_accuracy": 0.2912621359223301,
+            "majority_class_label": "approach",
+            "per_class": {
+              "approach": {
+                "matched_frame_count": 30,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 30
+                }
+              },
+              "first contact": {
+                "matched_frame_count": 28,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 28
+                }
+              },
+              "gripper close": {
+                "matched_frame_count": 5,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 5
+                }
+              },
+              "gripper open": {
+                "matched_frame_count": 15,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 15
+                }
+              },
+              "active push": {
+                "matched_frame_count": 5,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 5
+                }
+              },
+              "active pull": {
+                "matched_frame_count": 13,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 13
+                }
+              },
+              "engaged rotation": {
+                "matched_frame_count": 7,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 7
+                }
+              }
+            },
+            "clustered_bootstrap_95ci": {
+              "cluster_unit": "demo_id",
+              "cluster_count": 49,
+              "match_rate": {
+                "lower_2_5": 0.363265306122449,
+                "upper_97_5": 0.4775510204081633
+              },
+              "conditional_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              },
+              "end_to_end_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              }
+            }
+          },
+          "5": {
+            "tolerance_sec": 5.0,
+            "frame_count": 245,
+            "matched_frame_count": 190,
+            "tied_match_frame_count": 18,
+            "match_rate": 0.7755102040816326,
+            "correct_count": 0,
+            "conditional_accuracy": 0.0,
+            "end_to_end_accuracy": 0.0,
+            "annotated_event_count": 165,
+            "hit_event_count": 155,
+            "event_recall_at_k": 0.9393939393939394,
+            "chance_accuracy": 0.14285714285714285,
+            "majority_class_accuracy": 0.3631578947368421,
+            "majority_class_label": "approach",
+            "per_class": {
+              "approach": {
+                "matched_frame_count": 69,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 69
+                }
+              },
+              "first contact": {
+                "matched_frame_count": 44,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 44
+                }
+              },
+              "gripper close": {
+                "matched_frame_count": 6,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 6
+                }
+              },
+              "gripper open": {
+                "matched_frame_count": 23,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 23
+                }
+              },
+              "active push": {
+                "matched_frame_count": 13,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 13
+                }
+              },
+              "active pull": {
+                "matched_frame_count": 25,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 25
+                }
+              },
+              "engaged rotation": {
+                "matched_frame_count": 10,
+                "correct_count": 0,
+                "accuracy": 0.0,
+                "predictions": {
+                  "unparsed": 10
+                }
+              }
+            },
+            "clustered_bootstrap_95ci": {
+              "cluster_unit": "demo_id",
+              "cluster_count": 49,
+              "match_rate": {
+                "lower_2_5": 0.7224489795918367,
+                "upper_97_5": 0.8285714285714286
+              },
+              "conditional_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              },
+              "end_to_end_accuracy": {
+                "lower_2_5": 0.0,
+                "upper_97_5": 0.0
+              }
+            }
+          }
+        },
+        "primary": {
+          "tolerance_sec": 5.0,
+          "frame_count": 245,
+          "matched_frame_count": 190,
+          "tied_match_frame_count": 18,
+          "match_rate": 0.7755102040816326,
+          "correct_count": 0,
+          "conditional_accuracy": 0.0,
+          "end_to_end_accuracy": 0.0,
+          "annotated_event_count": 165,
+          "hit_event_count": 155,
+          "event_recall_at_k": 0.9393939393939394,
+          "chance_accuracy": 0.14285714285714285,
+          "majority_class_accuracy": 0.3631578947368421,
+          "majority_class_label": "approach",
+          "per_class": {
+            "approach": {
+              "matched_frame_count": 69,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 69
+              }
+            },
+            "first contact": {
+              "matched_frame_count": 44,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 44
+              }
+            },
+            "gripper close": {
+              "matched_frame_count": 6,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 6
+              }
+            },
+            "gripper open": {
+              "matched_frame_count": 23,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 23
+              }
+            },
+            "active push": {
+              "matched_frame_count": 13,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 13
+              }
+            },
+            "active pull": {
+              "matched_frame_count": 25,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 25
+              }
+            },
+            "engaged rotation": {
+              "matched_frame_count": 10,
+              "correct_count": 0,
+              "accuracy": 0.0,
+              "predictions": {
+                "unparsed": 10
+              }
+            }
+          },
+          "clustered_bootstrap_95ci": {
+            "cluster_unit": "demo_id",
+            "cluster_count": 49,
+            "match_rate": {
+              "lower_2_5": 0.7224489795918367,
+              "upper_97_5": 0.8285714285714286
+            },
+            "conditional_accuracy": {
+              "lower_2_5": 0.0,
+              "upper_97_5": 0.0
+            },
+            "end_to_end_accuracy": {
+              "lower_2_5": 0.0,
+              "upper_97_5": 0.0
+            }
+          }
+        }
+      }
+    },
+    "is_final": true
+  }
+}
