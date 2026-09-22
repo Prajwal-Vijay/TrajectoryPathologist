@@ -120,7 +120,7 @@ def test_kite_flow_selector_uses_stride_and_fixed_sample_nms(monkeypatch) -> Non
     )
 
     assert [frame.frame_index for frame in selected] == [2, 14]
-    assert set(resize_calls) == {(128, 128)}
+    assert set(resize_calls) == {(512, 512)}
 
     padding_stats = {}
     selected_with_padding = select_kite_flow_keyframes(
@@ -146,6 +146,95 @@ def test_kite_flow_selector_uses_stride_and_fixed_sample_nms(monkeypatch) -> Non
 
 def test_kite_motion_nms_keeps_zero_motion_candidates_like_official_code() -> None:
     assert _top_peaks([0.0] * 7, count=2, suppression_radius=5) == [0, 6]
+
+
+def test_kite_flow_uses_only_configured_camera_for_flow_and_padding(
+    monkeypatch,
+) -> None:
+    frames = [
+        CameraFrameRef(
+            camera_name=camera_name,
+            timestamp_sec=index / 10.0,
+            image_path=Path(f"/tmp/{camera_name}_{index}.jpg"),
+            frame_index=index,
+        )
+        for index in range(8)
+        for camera_name in ("center", "wrist")
+    ]
+    read_camera_names: list[str] = []
+    flow_camera_pairs: list[tuple[str, str]] = []
+
+    class FakeFlow:
+        def __getitem__(self, _key: object) -> float:
+            return 1.0
+
+    class FakeMagnitude:
+        def mean(self) -> float:
+            return 1.0
+
+    class FakeCV2:
+        COLOR_BGR2GRAY = 0
+
+        @staticmethod
+        def imread(path: str) -> str:
+            camera_name = Path(path).stem.rsplit("_", 1)[0]
+            read_camera_names.append(camera_name)
+            return Path(path).stem
+
+        @staticmethod
+        def resize(image: str, _size: tuple[int, int]) -> str:
+            return image
+
+        @staticmethod
+        def cvtColor(image: str, _mode: int) -> str:
+            return image
+
+        @staticmethod
+        def calcOpticalFlowFarneback(
+            previous: str,
+            current: str,
+            *_args: object,
+        ) -> FakeFlow:
+            previous_camera = previous.rsplit("_", 1)[0]
+            current_camera = current.rsplit("_", 1)[0]
+            flow_camera_pairs.append((previous_camera, current_camera))
+            return FakeFlow()
+
+        @staticmethod
+        def cartToPolar(
+            _x_value: float,
+            _y_value: float,
+        ) -> tuple[FakeMagnitude, None]:
+            return FakeMagnitude(), None
+
+    monkeypatch.setattr(robofac_selectors, "_import_cv2", lambda: FakeCV2)
+    stats = {}
+
+    selected = select_kite_flow_keyframes(
+        frames,
+        frame_budget=5,
+        config={
+            "robofac_qa": {
+                "kite_flow": {
+                    "camera_name": "center",
+                    "frame_stride": 1,
+                    "nms_radius": 5,
+                }
+            }
+        },
+        selection_stats=stats,
+        pad_to_budget=True,
+    )
+
+    assert {frame.camera_name for frame in selected} == {"center"}
+    assert set(read_camera_names) == {"center"}
+    assert set(flow_camera_pairs) == {("center", "center")}
+    assert stats["protocol"] == "official_kite_single_camera"
+    assert stats["camera_name"] == "center"
+    assert stats["available_camera_names"] == ["center", "wrist"]
+    assert stats["input_frame_count"] == 16
+    assert stats["camera_frame_count"] == 8
+    assert stats["resize"] == [512, 512]
 
 
 def test_metric_padding_divides_trajectory_by_remaining_budget(monkeypatch) -> None:

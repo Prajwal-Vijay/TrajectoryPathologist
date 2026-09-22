@@ -69,6 +69,7 @@ def test_abc_flow_strides_and_robot_masking_are_configured_independently(
     assert config["metrics"]["visual_flow"]["spatial_aggregation"] == "mean"
     assert config["surprise"]["source_metrics"] == list(ABC_PRISM_SOURCE_METRICS)
     assert config["robofac_qa"]["kite_flow"]["frame_stride"] == 4
+    assert config["robofac_qa"]["kite_flow"]["camera_name"] == "top"
     assert config["metrics"]["visual_flow"]["robot_masking"]["enabled"] is True
     assert (
         config["metrics"]["visual_flow"]["robot_masking"]["box_threshold"]

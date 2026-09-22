@@ -38,6 +38,11 @@ REASSEMBLE_CONFIG_OVERRIDE = {
             "resize": [128, 128],
             "spatial_aggregation": "mean",
         }
+    },
+    "robofac_qa": {
+        "kite_flow": {
+            "camera_name": "hama1",
+        }
     }
 }
 
@@ -1144,12 +1149,20 @@ def _selector_evaluation_row(
         )
 
     selected_peaks: list[dict[str, Any]]
+    selection_protocol: dict[str, Any] | None = None
     error: str | None = None
     try:
         if selector_name == "uniform":
             frames = select_uniform_keyframes(bundle.camera_frames, top_k)
         elif selector_name == "kite_flow":
-            frames = select_kite_flow_keyframes(bundle.camera_frames, top_k, config=config)
+            kite_selection_stats: dict[str, Any] = {}
+            frames = select_kite_flow_keyframes(
+                bundle.camera_frames,
+                top_k,
+                config=config,
+                selection_stats=kite_selection_stats,
+            )
+            selection_protocol = kite_selection_stats
         elif selector_name in RONAR_SELECTORS:
             task_key = _ronar_task_key(bundle)
             task_statistics = (
@@ -1199,6 +1212,8 @@ def _selector_evaluation_row(
         requested_segment_level=requested_segment_level,
         selector_name=selector_name,
     )
+    if selection_protocol is not None:
+        row["selection_protocol"] = selection_protocol
     if error is not None:
         row["selector_error"] = error
     return row

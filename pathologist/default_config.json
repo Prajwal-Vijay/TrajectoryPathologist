@@ -97,10 +97,11 @@
   },
   "robofac_qa": {
     "kite_flow": {
+      "camera_name": "hama1",
       "frame_stride": 2,
       "nms_radius": 5,
-      "resize_width": 128,
-      "resize_height": 128
+      "resize_width": 512,
+      "resize_height": 512
     }
   },
   "reassemble": {

@@ -798,11 +798,15 @@ def _extract_surprise_flood_events(
     if len(scores) < 3:
         return []
 
+    topology_peak_indices = _local_maxima_indices(
+        scores,
+        include_boundary=True,
+    )
     peak_indices = _local_maxima_indices(scores)
     if not peak_indices:
         return []
 
-    peak_set = set(peak_indices)
+    topology_peak_set = set(topology_peak_indices)
     parent = list(range(len(scores)))
     component_peak: dict[int, int] = {}
     active = [False] * len(scores)
@@ -811,7 +815,7 @@ def _extract_surprise_flood_events(
     for index in sorted(range(len(scores)), key=lambda item: (-scores[item], timestamps[item])):
         active[index] = True
         parent[index] = index
-        if index in peak_set:
+        if index in topology_peak_set:
             component_peak[index] = index
 
         for neighbor in (index - 1, index + 1):
@@ -837,7 +841,10 @@ def _extract_surprise_flood_events(
                 }
             parent[_find_union_parent(parent, index)] = survivor_root
 
-    global_peak_index = max(peak_indices, key=lambda item: (scores[item], -timestamps[item]))
+    global_peak_index = max(
+        topology_peak_indices,
+        key=lambda item: (scores[item], -timestamps[item]),
+    )
     global_base = min(scores)
     events: list[SurpriseFloodEvent] = []
     for peak_index in peak_indices:
@@ -939,8 +946,12 @@ def _rank_surprise_flood_events(
     )
 
 
-def _local_maxima_indices(scores: list[float]) -> list[int]:
-    """Return representative indices for local maxima, including flat plateaus."""
+def _local_maxima_indices(
+    scores: list[float],
+    *,
+    include_boundary: bool = False,
+) -> list[int]:
+    """Return representative local maxima, optionally including boundary plateaus."""
 
     peaks: list[int] = []
     index = 0
@@ -955,12 +966,16 @@ def _local_maxima_indices(scores: list[float]) -> list[int]:
         current_value = scores[plateau_start]
         left_ok = left_value is None or current_value > left_value
         right_ok = right_value is None or current_value > right_value
-        if left_ok and right_ok:
+        touches_boundary = plateau_start == 0 or plateau_end == last
+        is_constant_series = plateau_start == 0 and plateau_end == last
+        if (
+            left_ok
+            and right_ok
+            and (include_boundary or not touches_boundary or is_constant_series)
+        ):
             peaks.append((plateau_start + plateau_end) // 2)
         index += 1
-    if len(peaks) == 1 and (peaks[0] == 0 or peaks[0] == last):
-        return peaks
-    return [peak for peak in peaks if 0 < peak < last]
+    return peaks
 
 
 def _find_union_parent(parent: list[int], index: int) -> int:
