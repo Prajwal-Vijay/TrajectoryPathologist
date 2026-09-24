@@ -25,6 +25,7 @@ from pathologist.metrics.kinematics import (
     StallingMetric,
     VelocitySpikeMetric,
 )
+from pathologist.metrics.object_interaction import ObjectInteractionMotionMetric
 from pathologist.metrics.signals import (
     ActionDiscontinuityMetric,
     ActionDistributionEntropyMetric,
@@ -61,6 +62,7 @@ def default_metric_computers() -> list[MetricComputer]:
         ForceNormMetric(),
         VisualFlowMetric(),
         FrozenDinoPatchNoveltyMetric(),
+        ObjectInteractionMotionMetric(),
         AudioSpectralFluxMetric(),
         GripperApertureSpeedMetric(),
         GripperTransitionMetric(),

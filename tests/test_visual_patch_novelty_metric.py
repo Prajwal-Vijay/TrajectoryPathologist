@@ -115,8 +115,8 @@ def test_metric_builds_temporal_samples_from_frozen_patch_grids(
     assert result.samples[1].value == pytest.approx(2.0)
 
 
-def test_metric_is_registered_as_a_default_ecod_source() -> None:
+def test_metric_is_available_but_not_a_default_ecod_source() -> None:
     metric_names = {metric.name for metric in MetricEngine().metrics}
 
     assert "visual_patch_novelty" in metric_names
-    assert "visual_patch_novelty" in DEFAULT_SURPRISE_SOURCE_METRICS
+    assert "visual_patch_novelty" not in DEFAULT_SURPRISE_SOURCE_METRICS

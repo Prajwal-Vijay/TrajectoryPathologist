@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
+
+import pytest
 
 from pathologist.adapters.vifailback_bundle import (
     ViFailBackBundleAdapter,
     _build_records,
     _build_streams,
+    _eef_velocity_records,
+    _frames_from_image_dir,
     _gripper_normalization,
+    _load_episode_annotation,
     _resolve_gripper_indices,
+    _uniform_timestamps,
+    _validate_native_sample_rate,
 )
 
 
@@ -131,3 +140,90 @@ def test_vifailback_adapter_reuses_existing_hdf5_rgb_cache(tmp_path: Path) -> No
     assert len(frames) == 1
     assert frames[0].image_path == cached_frame
     assert cached_frame.read_bytes() == b"cached"
+
+
+def test_vifailback_native_timestamps_are_exactly_25_hz() -> None:
+    timestamps = _uniform_timestamps(4, 25.0)
+
+    assert timestamps == [0.0, 0.04, 0.08, 0.12]
+    _validate_native_sample_rate(25.0)
+    with pytest.raises(ValueError, match="exactly 25 Hz"):
+        _validate_native_sample_rate(50.0)
+
+
+def test_vifailback_eef_velocity_uses_bimanual_target_poses() -> None:
+    identity = [0.0, 0.0, 0.0, 1.0]
+    quarter_turn_z = [0.0, 0.0, math.sin(math.pi / 4.0), math.cos(math.pi / 4.0)]
+    poses = [
+        [0.0, 0.0, 0.0, *identity, 0.0, 1.0, 0.0, 0.0, *identity, 0.0],
+        [0.04, 0.0, 0.0, *quarter_turn_z, 0.0, 1.0, 0.08, 0.0, *identity, 0.0],
+    ]
+
+    records = _eef_velocity_records(poses, [0.0, 0.04])
+
+    assert len(records) == 1
+    assert records[0]["sample_index"] == 1
+    assert records[0]["eef_linear_velocity"] == pytest.approx(
+        [1.0, 0.0, 0.0, 0.0, 2.0, 0.0]
+    )
+    assert records[0]["eef_angular_velocity"] == pytest.approx(
+        [0.0, 0.0, (math.pi / 2.0) / 0.04, 0.0, 0.0, 0.0]
+    )
+
+
+def test_cached_frame_indices_restart_for_each_camera(tmp_path: Path) -> None:
+    cache_dir = tmp_path / "hdf5_rgb"
+    for camera_name in ("cam_high", "cam_left_wrist"):
+        camera_dir = cache_dir / camera_name
+        camera_dir.mkdir(parents=True)
+        for index in range(2):
+            (camera_dir / f"{index:06d}_t{index / 25.0:08.3f}.jpg").write_bytes(b"jpeg")
+
+    frames = _frames_from_image_dir(cache_dir, 25.0)
+
+    for camera_name in ("cam_high", "cam_left_wrist"):
+        camera_frames = [frame for frame in frames if frame.camera_name == camera_name]
+        assert [frame.frame_index for frame in camera_frames] == [0, 1]
+        assert [frame.timestamp_sec for frame in camera_frames] == [0.0, 0.04]
+
+
+def test_vifailback_annotation_preserves_exact_source_frame(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "ViFailback-Dataset"
+    h5_path = dataset_root / "raw_data" / "example_task" / "episode_7.hdf5"
+    h5_path.parent.mkdir(parents=True)
+    annotation_dir = dataset_root / "annotated_data" / "example_task"
+    annotation_dir.mkdir(parents=True)
+    annotation_path = annotation_dir / "example_task_annotations.json"
+    annotation_path.write_text(
+        json.dumps(
+            [
+                {
+                    "video": "annotated_data/example_task/videos/episode_7_cam_high.mp4",
+                    "task": "Example task",
+                    "failure_detection": "yes",
+                    "failure_type": "gripper 6d-pose",
+                    "keyframe": [
+                        {
+                            "avoid_keyframe": (
+                                "annotated_data/example_task/frames/"
+                                "episode_7_cam_high/172_avoid_keyframe.jpg"
+                            ),
+                            "correct_keyframe": (
+                                "annotated_data/example_task/frames/"
+                                "episode_7_cam_high/269_correct_keyframe.jpg"
+                            ),
+                        }
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    metadata = _load_episode_annotation(h5_path, 25.0)
+
+    assert metadata["annotation_available"] is True
+    assert metadata["avoid_keyframe_indices"] == [172]
+    assert metadata["avoid_keyframe_timestamps_sec"] == pytest.approx([6.88])
+    assert metadata["correct_keyframe_indices"] == [269]
+    assert metadata["correct_keyframe_timestamps_sec"] == pytest.approx([10.76])

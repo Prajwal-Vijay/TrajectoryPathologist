@@ -31,7 +31,8 @@ def run_key_event_pipeline(
     frame_cache_dir: str | Path | None = None,
     video_sample_fps: float = 2.0,
     hdf5_fps: float = 25.0,
-    default_control_hz: float = 50.0,
+    default_control_hz: float = 25.0,
+    top_k: int | None = None,
     frame_stride_within_window: int | None = None,
     max_events_to_label: int | None = None,
     openai_model: str | None = None,
@@ -55,6 +56,11 @@ def run_key_event_pipeline(
     config_bundle_path = bundle_path if bundle_path.is_dir() else bundle_path.parent
     resolved_task_contract = task_contract or _load_task_contract(task_contract_path, config_bundle_path)
     config = load_pipeline_config(config_path=config_path, bundle_path=config_bundle_path)
+    if adapter == "vifailback":
+        _apply_vifailback_config(
+            config,
+            top_k=2 if top_k is None else top_k,
+        )
     selector_config = config_section(config, "selector")
     labeling_config = config_section(config, "labeling")
 
@@ -482,6 +488,52 @@ def _float_metadata_list(metric: MetricResult, key: str) -> list[float]:
     return output
 
 
+def _apply_vifailback_config(config: dict[str, Any], top_k: int) -> None:
+    if top_k <= 0:
+        raise ValueError("ViFailBack top_k must be positive.")
+
+    camera_names = ["cam_high", "cam_left_wrist", "cam_right_wrist"]
+    metrics_config = config.setdefault("metrics", {})
+    if not isinstance(metrics_config, dict):
+        metrics_config = {}
+        config["metrics"] = metrics_config
+    for metric_name in (
+        "visual_flow",
+        "visual_patch_novelty",
+        "object_interaction_motion",
+    ):
+        metric_config = metrics_config.setdefault(metric_name, {})
+        if not isinstance(metric_config, dict):
+            metric_config = {}
+            metrics_config[metric_name] = metric_config
+        metric_config["camera_names"] = list(camera_names)
+    visual_flow_config = metrics_config["visual_flow"]
+    visual_flow_config["spatial_aggregation"] = "top_fraction_mean"
+    visual_flow_config["top_fraction"] = 0.02
+
+    selector_config = config.setdefault("selector", {})
+    if not isinstance(selector_config, dict):
+        selector_config = {}
+        config["selector"] = selector_config
+    surprise_flood_config = selector_config.setdefault("surprise_flood", {})
+    if not isinstance(surprise_flood_config, dict):
+        surprise_flood_config = {}
+        selector_config["surprise_flood"] = surprise_flood_config
+    surprise_flood_config.update(
+        {
+            "smoothing_window": 11,
+            "ranking": "persistence",
+            "max_proposals": int(top_k),
+        }
+    )
+
+    robofac_config = config.setdefault("robofac_qa", {})
+    if isinstance(robofac_config, dict):
+        kite_config = robofac_config.setdefault("kite_flow", {})
+        if isinstance(kite_config, dict):
+            kite_config["camera_name"] = "cam_high"
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the metric-first key event pipeline.")
     parser.add_argument(
@@ -517,8 +569,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--default-control-hz",
         type=float,
-        default=50.0,
-        help="Fallback control rate for ViFailBack HDF5 telemetry if no video frames are available.",
+        default=25.0,
+        help="ViFailBack telemetry rate. Must remain 25 Hz to preserve exact frame alignment.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=None,
+        help="Number of proposals. ViFailBack defaults to 2; other adapters retain their configured value.",
     )
     parser.add_argument(
         "--task-contract",
@@ -596,6 +654,7 @@ def main() -> None:
         video_sample_fps=args.video_sample_fps,
         hdf5_fps=args.hdf5_fps,
         default_control_hz=args.default_control_hz,
+        top_k=args.top_k,
         frame_stride_within_window=args.frame_stride_within_window,
         max_events_to_label=args.max_events_to_label,
         openai_model=args.openai_model,

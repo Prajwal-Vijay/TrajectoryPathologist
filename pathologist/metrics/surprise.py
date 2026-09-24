@@ -24,7 +24,7 @@ DEFAULT_SURPRISE_SOURCE_METRICS = [
     "eef_angular_jerk",
     "gripper_aperture_speed",
     "visual_flow",
-    "visual_patch_novelty",
+    "object_interaction_motion",
     "audio_spectral_flux",
 ]
 
@@ -71,7 +71,7 @@ class ECODSurpriseScorer:
             "eef_translational_stalling": "left",
             "eef_rotational_stalling": "left",
             "gripper_aperture_speed": "right",
-            "visual_patch_novelty": "right",
+            "object_interaction_motion": "right",
             "audio_spectral_flux": "right",
         }
         if isinstance(tail_overrides, dict):
@@ -80,7 +80,7 @@ class ECODSurpriseScorer:
         self.score_tail_overrides["eef_translational_stalling"] = "left"
         self.score_tail_overrides["eef_rotational_stalling"] = "left"
         self.score_tail_overrides["gripper_aperture_speed"] = "right"
-        self.score_tail_overrides["visual_patch_novelty"] = "right"
+        self.score_tail_overrides["object_interaction_motion"] = "right"
         self.score_tail_overrides["audio_spectral_flux"] = "right"
 
         skewness_overrides = self.surprise_config.get("skewness_sign_overrides", {})

@@ -21,6 +21,7 @@ from pathologist.metrics.kinematics import (
     StallingMetric,
     VelocitySpikeMetric,
 )
+from pathologist.metrics.object_interaction import ObjectInteractionMotionMetric
 from pathologist.metrics.signals import (
     ActionDiscontinuityMetric,
     ActionDistributionEntropyMetric,
@@ -55,6 +56,7 @@ __all__ = [
     "MetricComputer",
     "MetricEngine",
     "MotionSmoothnessMetric",
+    "ObjectInteractionMotionMetric",
     "StallingMetric",
     "TimestampRegularityMetric",
     "VelocitySpikeMetric",

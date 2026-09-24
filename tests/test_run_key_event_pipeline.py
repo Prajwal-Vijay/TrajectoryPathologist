@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from pathologist.run_key_event_pipeline import (
+    _apply_vifailback_config,
     _centered_moving_average,
     _selected_ecod_plot_components,
     run_key_event_pipeline,
@@ -151,6 +152,29 @@ def test_selected_ecod_plot_components_defaults_to_actual_score() -> None:
 def test_centered_moving_average_uses_partial_edge_windows() -> None:
     assert _centered_moving_average([1.0, 2.0, 7.0, 10.0], 3) == [1.5, 10.0 / 3.0, 19.0 / 3.0, 8.5]
     assert _centered_moving_average([1.0, 2.0], 1) == [1.0, 2.0]
+
+
+def test_vifailback_config_uses_all_cameras_25hz_window_and_top_two() -> None:
+    config: dict = {}
+
+    _apply_vifailback_config(config, top_k=2)
+
+    for metric_name in (
+        "visual_flow",
+        "visual_patch_novelty",
+        "object_interaction_motion",
+    ):
+        assert config["metrics"][metric_name]["camera_names"] == [
+            "cam_high",
+            "cam_left_wrist",
+            "cam_right_wrist",
+        ]
+    assert config["metrics"]["visual_flow"]["spatial_aggregation"] == "top_fraction_mean"
+    assert config["metrics"]["visual_flow"]["top_fraction"] == 0.02
+    assert config["selector"]["surprise_flood"]["smoothing_window"] == 11
+    assert config["selector"]["surprise_flood"]["ranking"] == "persistence"
+    assert config["selector"]["surprise_flood"]["max_proposals"] == 2
+    assert config["robofac_qa"]["kite_flow"]["camera_name"] == "cam_high"
 
 
 def _telemetry_rows() -> list[dict]:

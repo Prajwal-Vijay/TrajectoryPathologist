@@ -37,7 +37,10 @@ REASSEMBLE_CONFIG_OVERRIDE = {
             "frame_stride": 2,
             "resize": [128, 128],
             "spatial_aggregation": "mean",
-        }
+        },
+        "object_interaction_motion": {
+            "camera_names": ["hama1", "hama2", "hand"],
+        },
     },
     "robofac_qa": {
         "kite_flow": {
@@ -574,7 +577,11 @@ def _set_visual_flow_camera_names(config: dict[str, Any], camera_names: list[str
     metrics_config = config.setdefault("metrics", {})
     if not isinstance(metrics_config, dict):
         return
-    for metric_name in ("visual_flow", "visual_patch_novelty"):
+    for metric_name in (
+        "visual_flow",
+        "visual_patch_novelty",
+        "object_interaction_motion",
+    ):
         visual_config = metrics_config.setdefault(metric_name, {})
         if isinstance(visual_config, dict):
             visual_config["camera_names"] = list(camera_names)

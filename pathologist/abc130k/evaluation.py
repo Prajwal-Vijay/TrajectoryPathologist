@@ -1006,15 +1006,8 @@ def _abc_config_override(
                     ),
                 },
             },
-            "visual_patch_novelty": {
-                "enabled": True,
+            "object_interaction_motion": {
                 "camera_names": list(camera_names),
-                "model_id": "facebook/dinov2-small",
-                "sample_period_sec": 0.5,
-                "local_match_radius": 2,
-                "top_fraction": 0.02,
-                "batch_size": 16,
-                "device": "auto",
             },
         },
         "robofac_qa": {
