@@ -21,6 +21,7 @@ from pathologist.qa.ronar_selector import (
     extract_ronar_features,
     select_ronar_keyevents,
 )
+from pathologist.reassemble.artifacts import export_per_trajectory_results
 from pathologist.schemas.common import Modality, TimeWindow
 from pathologist.schemas.key_event import KeyEventProposal
 from pathologist.schemas.trajectory_bundle import CameraFrameRef, ModalityStream, TrajectoryBundle
@@ -72,6 +73,9 @@ def run_reassemble_eval_pipeline(
     ronar_sample_period_sec: float = RONAR_DEFAULT_SAMPLE_PERIOD_SEC,
     ronar_threshold: float = RONAR_DEFAULT_THRESHOLD,
     ronar_calibration_cache: str | Path | None = None,
+    per_trajectory_results_dir: str | Path | None = None,
+    annotation_events_by_bundle_id: dict[str, list[Any]] | None = None,
+    annotation_labels: list[str] | tuple[str, ...] | None = None,
     resume: bool = False,
     verbose: bool = False,
 ) -> dict[str, Any]:
@@ -130,6 +134,15 @@ def run_reassemble_eval_pipeline(
         if ronar_calibration_cache is not None
         else output_path / "ronar_calibration.json"
     )
+    resolved_per_trajectory_results_dir = (
+        Path(per_trajectory_results_dir).expanduser().resolve()
+        if per_trajectory_results_dir is not None
+        else None
+    )
+    if resolved_per_trajectory_results_dir is not None:
+        resolved_per_trajectory_results_dir.mkdir(parents=True, exist_ok=True)
+    resolved_annotation_events = annotation_events_by_bundle_id or {}
+    resolved_annotation_labels = list(annotation_labels or [])
 
     config = deep_merge(load_pipeline_config(config_path=config_path), REASSEMBLE_CONFIG_OVERRIDE)
     resolved_metric_ranking = _resolve_metric_ranking(
@@ -373,13 +386,15 @@ def run_reassemble_eval_pipeline(
                 if "metric" in resolved_selectors:
                     metric_profile = MetricEngine(config=config).compute(demo_bundle)
                     selector = _selector_from_config(config)
+                    ecod_aggregate_base = output_path / "ecod_aggregates" / demo_bundle.bundle_id
                     proposals = selector.select(
                         metric_profile,
                         trajectory_bundle=demo_bundle,
                         debug_timeline_path=output_path / "timeline_debug" / f"{demo_bundle.bundle_id}.json",
                         ecod_aggregate_path=(
-                            output_path / "ecod_aggregates" / demo_bundle.bundle_id
+                            ecod_aggregate_base
                             if plot_ecod_aggregates
+                            or resolved_per_trajectory_results_dir is not None
                             else None
                         ),
                     )
@@ -409,6 +424,24 @@ def run_reassemble_eval_pipeline(
                     _write_selected_peak_debug(selected_peaks_dir, demo_bundle, rows)
                 except Exception as exc:
                     selected_peak_debug_error = f"{type(exc).__name__}: {exc}"
+                per_trajectory_export = None
+                if (
+                    resolved_per_trajectory_results_dir is not None
+                    and metric_profile is not None
+                ):
+                    per_trajectory_export = export_per_trajectory_results(
+                        results_root=resolved_per_trajectory_results_dir,
+                        bundle=demo_bundle,
+                        metric_profile=metric_profile,
+                        proposals=proposals[:top_k],
+                        aggregate_debug_path=ecod_aggregate_base,
+                        ground_truth_events=resolved_annotation_events.get(
+                            demo_bundle.bundle_id,
+                            [],
+                        ),
+                        annotation_labels=resolved_annotation_labels,
+                        camera_names=resolved_camera_names,
+                    )
                 manifest_entry.update(
                     {
                         "selectors": resolved_selectors,
@@ -418,6 +451,7 @@ def run_reassemble_eval_pipeline(
                             for row in rows
                         },
                         "metric_count": len(metric_profile.metrics) if metric_profile is not None else 0,
+                        "per_trajectory_results": per_trajectory_export,
                     }
                 )
                 if selected_peak_debug_error is not None:
@@ -552,6 +586,17 @@ def run_reassemble_eval_pipeline(
         "calibration_cache": str(resolved_ronar_calibration_cache),
         "calibration": ronar_calibration["summary"],
     }
+    summary["per_trajectory_results_dir"] = (
+        str(resolved_per_trajectory_results_dir)
+        if resolved_per_trajectory_results_dir is not None
+        else None
+    )
+    summary["per_trajectory_export_count"] = sum(
+        1
+        for entry in manifest
+        if isinstance(entry.get("per_trajectory_results"), dict)
+    )
+    summary["annotation_labels"] = resolved_annotation_labels
     _write_json_atomic(summary_path, summary)
     return summary
 

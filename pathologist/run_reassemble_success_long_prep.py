@@ -13,6 +13,7 @@ from statistics import median
 from typing import Any
 
 from pathologist.adapters.reassemble_bundle import _global_timestamp_origin, _parse_segments
+from pathologist.qa.reassemble_events import EVENT_LABELS, parse_event_annotations
 from pathologist.reassemble import run_reassemble_eval_pipeline
 
 
@@ -114,6 +115,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Prepare viewer/eval outputs but do not create MP4 clips.",
     )
     parser.add_argument(
+        "--per-trajectory-results-dir",
+        default=None,
+        help=(
+            "Export each trajectory's ECOD series, PRISM peak frames, and combined "
+            "annotation plot under this directory."
+        ),
+    )
+    parser.add_argument(
+        "--annotations-path",
+        default=None,
+        help="Optional REASSEMBLE annotations.txt used in per-trajectory plots.",
+    )
+    parser.add_argument(
+        "--annotation-label",
+        dest="annotation_labels",
+        action="append",
+        choices=list(EVENT_LABELS),
+        help="Ground-truth label to include; repeat for multiple labels.",
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume from existing outputs instead of restarting eval rows.",
@@ -127,6 +148,18 @@ def main() -> None:
     data_root = Path(args.data_root).expanduser().resolve()
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    annotation_events_by_bundle_id = None
+    annotation_labels = args.annotation_labels
+    if args.annotations_path is not None:
+        parsed_events, _ = parse_event_annotations(args.annotations_path)
+        annotation_labels = annotation_labels or list(EVENT_LABELS)
+        allowed_labels = set(annotation_labels)
+        annotation_events_by_bundle_id = {
+            bundle_id: [
+                event for event in events if event.label in allowed_labels
+            ]
+            for bundle_id, events in parsed_events.items()
+        }
 
     candidates = scan_success_candidates(
         data_root=data_root,
@@ -188,6 +221,9 @@ def main() -> None:
                 str(Path(h5_path).expanduser().resolve()): windows_by_h5[h5_path]
             },
             plot_ecod_aggregates=True,
+            per_trajectory_results_dir=args.per_trajectory_results_dir,
+            annotation_events_by_bundle_id=annotation_events_by_bundle_id,
+            annotation_labels=annotation_labels,
             resume=args.resume or summary is not None,
             verbose=args.verbose,
         )

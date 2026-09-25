@@ -6,6 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
+from pathologist.qa.reassemble_events import EVENT_LABELS, parse_event_annotations
 from pathologist.reassemble import run_reassemble_eval_pipeline
 
 
@@ -83,6 +84,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Write raw/smoothed ECOD aggregate plots and local-maxima JSON under ecod_aggregates/.",
     )
     parser.add_argument(
+        "--per-trajectory-results-dir",
+        default=None,
+        help=(
+            "Export each trajectory's ECOD series, PRISM peak frames, and combined "
+            "annotation plot under this directory."
+        ),
+    )
+    parser.add_argument(
+        "--annotations-path",
+        default=None,
+        help="Optional REASSEMBLE annotations.txt used in per-trajectory plots.",
+    )
+    parser.add_argument(
+        "--annotation-label",
+        dest="annotation_labels",
+        action="append",
+        choices=list(EVENT_LABELS),
+        help=(
+            "Ground-truth label to include. Repeat for multiple labels. "
+            "Defaults to every canonical label."
+        ),
+    )
+    parser.add_argument(
         "--ronar-sample-period-sec",
         type=float,
         default=0.2,
@@ -120,6 +144,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_arg_parser().parse_args()
+    annotation_events_by_bundle_id = None
+    annotation_labels = args.annotation_labels
+    if args.annotations_path is not None:
+        parsed_events, _ = parse_event_annotations(args.annotations_path)
+        annotation_labels = annotation_labels or list(EVENT_LABELS)
+        allowed_labels = set(annotation_labels)
+        annotation_events_by_bundle_id = {
+            bundle_id: [
+                event for event in events if event.label in allowed_labels
+            ]
+            for bundle_id, events in parsed_events.items()
+        }
     summary = run_reassemble_eval_pipeline(
         h5_path=Path(args.h5_path) if args.h5_path is not None else None,
         data_root=Path(args.data_root) if args.data_root is not None else None,
@@ -138,6 +174,9 @@ def main() -> None:
         evaluation_unit=args.evaluation_unit,
         max_demos=args.max_demos,
         plot_ecod_aggregates=args.plot,
+        per_trajectory_results_dir=args.per_trajectory_results_dir,
+        annotation_events_by_bundle_id=annotation_events_by_bundle_id,
+        annotation_labels=annotation_labels,
         ronar_sample_period_sec=args.ronar_sample_period_sec,
         ronar_threshold=args.ronar_threshold,
         ronar_calibration_cache=args.ronar_calibration_cache,
