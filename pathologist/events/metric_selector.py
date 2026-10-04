@@ -13,7 +13,7 @@ from pathologist.schemas.key_event import KeyEventProposal
 from pathologist.schemas.metrics import MetricEvent, MetricProfile, MetricResult
 from pathologist.schemas.trajectory_bundle import CameraFrameRef, TrajectoryBundle
 import numpy as np
-from scipy.ndimage import gaussian_filter1d
+from scipy.ndimage import gaussian_filter1d, median_filter
 from scipy.signal import savgol_filter
 
 @dataclass(slots=True)
@@ -133,9 +133,39 @@ class MetricEventSelector:
             self.surprise_flood_config.get("ranking", "area")
         )
         gamma = min(1.0, max(0.0, gamma))
+        rolling_baseline_config = self.surprise_flood_config.get(
+            "rolling_baseline",
+            {},
+        )
+        if not isinstance(rolling_baseline_config, dict):
+            rolling_baseline_config = {}
+        selection_input_scores = list(raw_scores)
+        rolling_baseline_debug: dict[str, Any] = {"enabled": False}
+        if bool(rolling_baseline_config.get("enabled", False)):
+            selection_input_scores, rolling_baseline_debug = (
+                _rolling_median_mad_residual(
+                    values=raw_scores,
+                    timestamps=timestamps,
+                    window_sec=float(
+                        rolling_baseline_config.get("window_sec", 30.0)
+                    ),
+                    mad_floor_fraction=float(
+                        rolling_baseline_config.get("mad_floor_fraction", 0.1)
+                    ),
+                    epsilon=float(
+                        rolling_baseline_config.get("epsilon", 1e-6)
+                    ),
+                    clip_negative=bool(
+                        rolling_baseline_config.get("clip_negative", True)
+                    ),
+                )
+            )
         # smoothed_scores = _centered_moving_average(raw_scores, max(1, smooth_window))
         # smoothed_scores = _centered_gaussian_filter(raw_scores, sigma=2.5)
-        smoothed_scores = _centered_savgol_filter(raw_scores, window_length=smooth_window)
+        smoothed_scores = _centered_savgol_filter(
+            selection_input_scores,
+            window_length=smooth_window,
+        )
 
         flood_events = _extract_surprise_flood_events(
             timestamps=timestamps,
@@ -156,7 +186,9 @@ class MetricEventSelector:
                 aggregate_metric_name=aggregate_metric_name,
                 timestamps=timestamps,
                 raw_scores=raw_scores,
+                selection_input_scores=selection_input_scores,
                 smoothed_scores=smoothed_scores,
+                rolling_baseline_debug=rolling_baseline_debug,
                 all_flood_events=all_flood_events,
                 selected_flood_events=selected_flood_events,
                 smooth_window=smooth_window,
@@ -229,6 +261,15 @@ class MetricEventSelector:
                         "merge_sec": flood_event.merge_sec,
                         "is_global_peak": flood_event.is_global_peak,
                         "smoothing_window": max(1, smooth_window),
+                        "rolling_baseline": {
+                            key: value
+                            for key, value in rolling_baseline_debug.items()
+                            if key not in {
+                                "rolling_median",
+                                "rolling_mad",
+                                "robust_scale",
+                            }
+                        },
                         "gamma": gamma,
                         "candidate_frame_count": len(candidate_frames),
                         "visual_context_sec": self.visual_context_sec,
@@ -329,7 +370,9 @@ class MetricEventSelector:
             "reason": reason,
             "timestamps_sec": timestamps or [],
             "raw_scores": raw_scores or [],
+            "selection_input_scores": raw_scores or [],
             "smoothed_scores": [],
+            "rolling_baseline": {"enabled": False},
             "source_metric_series": {},
             "local_maxima": [],
             "selected_local_maxima": [],
@@ -347,7 +390,9 @@ class MetricEventSelector:
         aggregate_metric_name: str,
         timestamps: list[float],
         raw_scores: list[float],
+        selection_input_scores: list[float],
         smoothed_scores: list[float],
+        rolling_baseline_debug: dict[str, Any],
         all_flood_events: list[SurpriseFloodEvent],
         selected_flood_events: list[SurpriseFloodEvent],
         smooth_window: int,
@@ -378,7 +423,9 @@ class MetricEventSelector:
             "ranking": ranking,
             "timestamps_sec": timestamps,
             "raw_scores": raw_scores,
+            "selection_input_scores": selection_input_scores,
             "smoothed_scores": smoothed_scores,
+            "rolling_baseline": rolling_baseline_debug,
             "source_metric_series": _source_metric_series(
                 metric_profile=metric_profile,
                 aggregate_metric_name=aggregate_metric_name,
@@ -401,6 +448,7 @@ class MetricEventSelector:
             bundle_id=metric_profile.bundle_id,
             timestamps=timestamps,
             raw_scores=raw_scores,
+            selection_input_scores=selection_input_scores,
             smoothed_scores=smoothed_scores,
             local_maxima=all_flood_events,
             selected_local_maxima=selected_flood_events,
@@ -488,6 +536,7 @@ def _write_ecod_aggregate_plots(
     bundle_id: str,
     timestamps: list[float],
     raw_scores: list[float],
+    selection_input_scores: list[float],
     smoothed_scores: list[float],
     local_maxima: list[SurpriseFloodEvent],
     selected_local_maxima: list[SurpriseFloodEvent],
@@ -519,7 +568,7 @@ def _write_ecod_aggregate_plots(
             plot_path=smoothed_plot_path,
             bundle_id=bundle_id,
             timestamps=timestamps,
-            raw_scores=raw_scores,
+            raw_scores=selection_input_scores,
             smoothed_scores=smoothed_scores,
             local_maxima=local_maxima,
             selected_local_maxima=selected_local_maxima,
@@ -1140,6 +1189,82 @@ def _interpolate_value(
     fraction = (target_time - left_time) / time_delta
     fraction = min(1.0, max(0.0, fraction))
     return left_score + fraction * (right_score - left_score)
+
+
+def _rolling_median_mad_residual(
+    *,
+    values: list[float],
+    timestamps: list[float],
+    window_sec: float,
+    mad_floor_fraction: float = 0.1,
+    epsilon: float = 1e-6,
+    clip_negative: bool = True,
+) -> tuple[list[float], dict[str, Any]]:
+    """Remove a centered rolling baseline and robustly scale the residual."""
+
+    if len(values) != len(timestamps):
+        raise ValueError("rolling baseline values and timestamps must have equal length")
+    if len(values) < 3:
+        raise ValueError("rolling baseline requires at least three samples")
+    if window_sec <= 0:
+        raise ValueError("rolling baseline window_sec must be positive")
+    if mad_floor_fraction < 0:
+        raise ValueError("rolling baseline mad_floor_fraction cannot be negative")
+    if epsilon <= 0:
+        raise ValueError("rolling baseline epsilon must be positive")
+
+    deltas = np.diff(np.asarray(timestamps, dtype=float))
+    positive_deltas = deltas[deltas > 0]
+    if positive_deltas.size == 0:
+        raise ValueError("rolling baseline requires increasing timestamps")
+    sample_period_sec = float(np.median(positive_deltas))
+    requested_window_samples = max(3, int(round(window_sec / sample_period_sec)))
+    if requested_window_samples % 2 == 0:
+        requested_window_samples += 1
+    maximum_odd_window = len(values) if len(values) % 2 == 1 else len(values) - 1
+    window_samples = min(requested_window_samples, maximum_odd_window)
+    window_samples = max(3, window_samples)
+
+    value_array = np.asarray(values, dtype=float)
+    rolling_median = median_filter(
+        value_array,
+        size=window_samples,
+        mode="reflect",
+    )
+    absolute_deviation = np.abs(value_array - rolling_median)
+    rolling_mad = median_filter(
+        absolute_deviation,
+        size=window_samples,
+        mode="reflect",
+    )
+    positive_mad = rolling_mad[rolling_mad > epsilon]
+    typical_mad = (
+        float(np.median(positive_mad))
+        if positive_mad.size
+        else 0.0
+    )
+    mad_floor = max(epsilon, typical_mad * mad_floor_fraction)
+    robust_scale = 1.4826 * np.maximum(rolling_mad, mad_floor)
+    residual = (value_array - rolling_median) / robust_scale
+    if clip_negative:
+        residual = np.maximum(residual, 0.0)
+
+    debug = {
+        "enabled": True,
+        "method": "centered_rolling_median_mad",
+        "window_sec": float(window_sec),
+        "window_samples": int(window_samples),
+        "sample_period_sec": sample_period_sec,
+        "mad_scale_constant": 1.4826,
+        "mad_floor_fraction": float(mad_floor_fraction),
+        "mad_floor": float(mad_floor),
+        "epsilon": float(epsilon),
+        "clip_negative": bool(clip_negative),
+        "rolling_median": rolling_median.tolist(),
+        "rolling_mad": rolling_mad.tolist(),
+        "robust_scale": robust_scale.tolist(),
+    }
+    return residual.tolist(), debug
 
 
 def _centered_moving_average(values: list[float], window: int) -> list[float]:

@@ -1,0 +1,66 @@
+{
+  "abc130k": {
+    "ecod_scope": "trajectory"
+  },
+  "metrics": {
+    "visual_patch_novelty": {
+      "enabled": false
+    },
+    "object_interaction_motion": {
+      "enabled": true,
+      "sample_period_sec": 0.5,
+      "chunk_size_frames": 32,
+      "tracker_resize": [384, 384],
+      "object_point_count": 48,
+      "gripper_point_count": 24,
+      "background_point_count": 96,
+      "min_visible_object_points": 8,
+      "min_visible_gripper_points": 8,
+      "visibility_lag_sec": 0.5,
+      "interaction": {
+        "cameras": ["top"],
+        "gating": {
+          "gripper_signal": "auto",
+          "closed_is_low": true,
+          "enter": 0.4,
+          "exit": 0.6,
+          "settle_s": 0.2
+        }
+      },
+      "segmentation": {
+        "gripper_prompt": "robot gripper.",
+        "object_prompt": "object held by robot. manipulated object. tool. component. part.",
+        "cache_dir": "/media/helen/28TB_VOL4/ABC130K_interaction_signals/mask_cache",
+        "chunk_size_frames": 32,
+        "device": "auto"
+      },
+      "tracking": {
+        "model_name": "cotracker3_offline",
+        "device": "auto"
+      }
+    }
+  },
+  "selector": {
+    "surprise_flood": {
+      "rolling_baseline": {
+        "enabled": false
+      }
+    }
+  },
+  "surprise": {
+    "source_metrics": [
+      "visual_flow",
+      "unexplained_object_motion",
+      "object_visibility_drop"
+    ],
+    "aggregation_groups": {
+      "motion": ["visual_flow"],
+      "interaction": [
+        "unexplained_object_motion",
+        "object_visibility_drop"
+      ]
+    },
+    "within_group_reduction": "mean",
+    "across_group_reduction": "sum"
+  }
+}

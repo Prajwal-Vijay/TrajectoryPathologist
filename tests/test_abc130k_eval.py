@@ -3,20 +3,33 @@ from types import SimpleNamespace
 
 import pytest
 
+from pathologist.config import deep_merge, load_pipeline_config
 from pathologist.abc130k.evaluation import (
+    ABCNominalPhase,
     ABC_PRISM_SOURCE_METRICS,
     _abc_config_override,
     _aggregate_rows,
+    _annotated_phase_windows,
     _contains,
     _evaluate_selector,
+    _nominal_phase_windows,
     _running_metrics_message,
+    _segment_conditioned_metric_proposals,
 )
 from pathologist.adapters.abc130k_bundle import (
     _build_robot_streams,
     _segments_from_annotations,
 )
 from pathologist.run_abc130k_eval_pipeline import build_arg_parser
-from pathologist.schemas import BundleFormat, CameraFrameRef, TimeWindow, TrajectoryBundle
+from pathologist.schemas import (
+    BundleFormat,
+    CameraFrameRef,
+    MetricProfile,
+    MetricResult,
+    MetricSample,
+    TimeWindow,
+    TrajectoryBundle,
+)
 
 
 def test_abc_annotations_define_half_open_mistake_intervals() -> None:
@@ -40,6 +53,178 @@ def test_abc_annotations_define_half_open_mistake_intervals() -> None:
     assert not _contains(failure.to_dict(), 4.5)
     assert segments[-1].ignored is True
     assert segments[-1].to_dict()["success"] is None
+
+
+def test_nominal_phases_keep_failures_inside_and_exclude_reset_intervals() -> None:
+    segments = _segments_from_annotations(
+        [
+            (0, "pick object"),
+            (2_000_000_000, "mistake"),
+            (4_000_000_000, "recover object"),
+            (5_000_000_000, "reset both arms"),
+            (6_000_000_000, "place object"),
+        ],
+        episode_origin_ns=0,
+        episode_end_ns=8_000_000_000,
+    )
+
+    phases = _nominal_phase_windows(
+        [segment.to_dict() for segment in segments],
+        duration_sec=8.0,
+    )
+
+    assert [
+        (phase.label, phase.start_sec, phase.end_sec)
+        for phase in phases
+    ] == [
+        ("pick object", 0.0, 4.0),
+        ("recover object", 4.0, 5.0),
+        ("place object", 6.0, 8.0),
+    ]
+    assert phases[0].start_sec <= segments[1].start_sec < phases[0].end_sec
+
+
+def test_annotated_phases_keep_failure_and_reset_as_independent_segments() -> None:
+    segments = _segments_from_annotations(
+        [
+            (0, "pick object"),
+            (2_000_000_000, "mistake"),
+            (4_000_000_000, "recover object"),
+            (5_000_000_000, "reset both arms"),
+        ],
+        episode_origin_ns=0,
+        episode_end_ns=6_000_000_000,
+    )
+
+    phases = _annotated_phase_windows(
+        [segment.to_dict() for segment in segments],
+        duration_sec=6.0,
+    )
+
+    assert [
+        (phase.label, phase.start_sec, phase.end_sec)
+        for phase in phases
+    ] == [
+        ("pick object", 0.0, 2.0),
+        ("mistake", 2.0, 4.0),
+        ("recover object", 4.0, 5.0),
+        ("reset both arms", 5.0, 6.0),
+    ]
+
+
+def test_segment_conditioned_ecod_keeps_one_global_budget() -> None:
+    samples_a = [
+        MetricSample(timestamp_sec=float(index), value=value)
+        for index, value in enumerate(
+            [1.0, 1.0, 8.0, 1.0, 1.0, 1.0, 2.0, 2.0, 10.0, 2.0, 2.0, 2.0]
+        )
+    ]
+    samples_b = [
+        MetricSample(timestamp_sec=float(index), value=value)
+        for index, value in enumerate(
+            [2.0, 2.0, 9.0, 2.0, 2.0, 2.0, 3.0, 3.0, 12.0, 3.0, 3.0, 3.0]
+        )
+    ]
+    profile = MetricProfile(
+        bundle_id="episode",
+        metrics=[
+            MetricResult(name="metric_a", description="A", samples=samples_a),
+            MetricResult(name="metric_b", description="B", samples=samples_b),
+        ],
+    )
+    bundle = TrajectoryBundle(bundle_id="episode", duration_sec=12.0)
+    phases = [
+        ABCNominalPhase("phase_0000", "pick", 0.0, 6.0, "subtask_0000"),
+        ABCNominalPhase("phase_0001", "place", 6.0, 12.0, "subtask_0002"),
+    ]
+    config = {
+        "surprise": {
+            "enabled": True,
+            "source_metrics": ["metric_a", "metric_b"],
+            "aggregation_reduction": "sum",
+        },
+        "selector": {
+            "surprise_flood": {
+                "aggregate_metric_name": "ecod_aggregate_score",
+                "smoothing_window": 1,
+                "ranking": "persistence",
+                "max_proposals": 5,
+            }
+        },
+    }
+
+    proposals = _segment_conditioned_metric_proposals(
+        bundle=bundle,
+        metric_profile=profile,
+        phases=phases,
+        config=config,
+        top_k=1,
+    )
+
+    assert len(proposals) == 1
+    assert proposals[0].metadata["ecod_scope"] == "nominal_subtask"
+    assert proposals[0].metadata["phase_id"] in {"phase_0000", "phase_0001"}
+    assert proposals[0].metadata["global_rank"] == 1
+
+
+def test_segment_conditioned_ecod_can_run_peak_selection_globally() -> None:
+    timestamps = [float(index) for index in range(12)]
+    profile = MetricProfile(
+        bundle_id="episode",
+        metrics=[
+            MetricResult(
+                name=name,
+                description=name,
+                samples=[
+                    MetricSample(timestamp_sec=timestamp, value=value)
+                    for timestamp, value in zip(timestamps, values)
+                ],
+            )
+            for name, values in (
+                (
+                    "metric_a",
+                    [1.0, 1.0, 8.0, 1.0, 1.0, 1.0, 2.0, 2.0, 10.0, 2.0, 2.0, 2.0],
+                ),
+                (
+                    "metric_b",
+                    [2.0, 2.0, 9.0, 2.0, 2.0, 2.0, 3.0, 3.0, 12.0, 3.0, 3.0, 3.0],
+                ),
+            )
+        ],
+    )
+    phases = [
+        ABCNominalPhase("phase_0000", "pick", 0.0, 6.0, "subtask_0000"),
+        ABCNominalPhase("phase_0001", "mistake", 6.0, 12.0, "subtask_0001"),
+    ]
+    config = {
+        "surprise": {
+            "source_metrics": ["metric_a", "metric_b"],
+            "aggregation_reduction": "sum",
+        },
+        "selector": {
+            "surprise_flood": {
+                "smoothing_window": 1,
+                "ranking": "persistence",
+                "max_proposals": 5,
+            }
+        },
+    }
+
+    proposals = _segment_conditioned_metric_proposals(
+        bundle=TrajectoryBundle(bundle_id="episode", duration_sec=12.0),
+        metric_profile=profile,
+        phases=phases,
+        config=config,
+        top_k=1,
+        ecod_scope="annotated_subtask",
+        peak_selection_scope="global",
+    )
+
+    assert len(proposals) == 1
+    assert proposals[0].metadata["ecod_scope"] == "annotated_subtask"
+    assert proposals[0].metadata["segment_peak_selection_scope"] == "global"
+    assert proposals[0].metadata["phase_id"] in {"phase_0000", "phase_0001"}
+    assert proposals[0].metadata["global_rank"] == 1
 
 
 def test_abc_flow_strides_and_robot_masking_are_configured_independently(
@@ -67,7 +252,7 @@ def test_abc_flow_strides_and_robot_masking_are_configured_independently(
     ]
     assert config["metrics"]["visual_flow"]["resize"] == [128, 128]
     assert config["metrics"]["visual_flow"]["spatial_aggregation"] == "mean"
-    assert config["surprise"]["source_metrics"] == list(ABC_PRISM_SOURCE_METRICS)
+    assert "surprise" not in config
     assert config["robofac_qa"]["kite_flow"]["frame_stride"] == 4
     assert config["robofac_qa"]["kite_flow"]["camera_name"] == "top"
     assert config["metrics"]["visual_flow"]["robot_masking"]["enabled"] is True
@@ -84,6 +269,163 @@ def test_abc_flow_strides_and_robot_masking_are_configured_independently(
         config["metrics"]["visual_flow"]["robot_masking"]["duplicate_iou_threshold"]
         == pytest.approx(0.8)
     )
+
+
+def test_abc_rolling_experiment_uses_sum_without_dino_or_object_motion(
+    tmp_path: Path,
+) -> None:
+    config = deep_merge(
+        load_pipeline_config(
+            config_path=(
+                Path(__file__).parents[1]
+                / "pathologist"
+                / "configs"
+                / "abc130k_rolling_residual.json"
+            )
+        ),
+        _abc_config_override(
+            camera_names=["top", "left_wrist", "right_wrist"],
+            top_k=5,
+            metric_ranking="persistence",
+            smoothing_window=10,
+            visual_flow_frame_stride=2,
+            kite_frame_stride=2,
+            robot_mask_visual_flow=False,
+            robot_mask_prompt="robot arm. robot gripper.",
+            robot_mask_box_threshold=0.35,
+            robot_mask_dilation_px=8,
+            robot_mask_cache_dir=tmp_path / "robot_masks",
+        ),
+    )
+
+    sources = config["surprise"]["source_metrics"]
+    assert config["surprise"]["aggregation_reduction"] == "sum"
+    assert "visual_patch_novelty" not in sources
+    assert "object_interaction_motion" not in sources
+    assert config["metrics"]["visual_patch_novelty"]["enabled"] is False
+    assert config["metrics"]["object_interaction_motion"]["enabled"] is False
+    assert config["selector"]["surprise_flood"]["rolling_baseline"] == {
+        "enabled": True,
+        "window_sec": 20.0,
+        "mad_floor_fraction": 0.1,
+        "epsilon": 1e-6,
+        "clip_negative": True,
+    }
+
+
+def test_abc_segment_experiment_uses_nominal_subtask_ecod_scope() -> None:
+    config = load_pipeline_config(
+        config_path=(
+            Path(__file__).parents[1]
+            / "pathologist"
+            / "configs"
+            / "abc130k_segment_ecod.json"
+        )
+    )
+
+    assert config["abc130k"]["ecod_scope"] == "nominal_subtask"
+    assert config["selector"]["surprise_flood"]["rolling_baseline"]["enabled"] is False
+    assert config["surprise"]["aggregation_reduction"] == "sum"
+    assert "visual_patch_novelty" not in config["surprise"]["source_metrics"]
+    assert "object_interaction_motion" not in config["surprise"]["source_metrics"]
+
+
+def test_abc_annotated_segment_experiment_uses_every_ground_truth_segment() -> None:
+    config = load_pipeline_config(
+        config_path=(
+            Path(__file__).parents[1]
+            / "pathologist"
+            / "configs"
+            / "abc130k_annotated_segment_ecod.json"
+        )
+    )
+
+    assert config["abc130k"]["ecod_scope"] == "annotated_subtask"
+    assert config["selector"]["surprise_flood"]["rolling_baseline"]["enabled"] is False
+    assert config["surprise"]["aggregation_reduction"] == "sum"
+    assert config["metrics"]["visual_patch_novelty"]["enabled"] is False
+    assert config["metrics"]["object_interaction_motion"]["enabled"] is False
+
+
+def test_abc_annotated_segment_experiment_can_select_peaks_globally() -> None:
+    config = load_pipeline_config(
+        config_path=(
+            Path(__file__).parents[1]
+            / "pathologist"
+            / "configs"
+            / "abc130k_annotated_segment_ecod_global_peaks.json"
+        )
+    )
+
+    assert config["abc130k"] == {
+        "ecod_scope": "annotated_subtask",
+        "segment_peak_selection_scope": "global",
+    }
+    assert config["selector"]["surprise_flood"]["ranking"] == "persistence"
+    assert config["selector"]["surprise_flood"]["rolling_baseline"]["enabled"] is False
+    assert config["surprise"]["aggregation_reduction"] == "sum"
+
+
+def test_abc_segment_log_normalized_experiment_normalizes_before_sum() -> None:
+    config = load_pipeline_config(
+        config_path=(
+            Path(__file__).parents[1]
+            / "pathologist"
+            / "configs"
+            / "abc130k_segment_ecod_log_normalized.json"
+        )
+    )
+
+    assert config["abc130k"]["ecod_scope"] == "nominal_subtask"
+    assert config["surprise"]["aggregation_reduction"] == "sum"
+    assert config["surprise"]["pre_aggregation_log_sample_normalization"] is True
+    assert config["metrics"]["visual_patch_novelty"]["enabled"] is False
+    assert config["metrics"]["object_interaction_motion"]["enabled"] is False
+
+
+def test_abc_global_object_interaction_experiment_uses_global_persistence() -> None:
+    config = load_pipeline_config(
+        config_path=(
+            Path(__file__).parents[1]
+            / "pathologist"
+            / "configs"
+            / "abc130k_global_object_interaction.json"
+        )
+    )
+
+    assert config["abc130k"]["ecod_scope"] == "trajectory"
+    assert config["selector"]["surprise_flood"]["ranking"] == "persistence"
+    assert config["selector"]["surprise_flood"]["rolling_baseline"]["enabled"] is False
+    assert config["metrics"]["visual_patch_novelty"]["enabled"] is False
+    assert config["metrics"]["object_interaction_motion"]["enabled"] is True
+    assert config["metrics"]["object_interaction_motion"]["camera_names"] == [
+        "top",
+        "left_wrist",
+        "right_wrist",
+    ]
+    assert "visual_patch_novelty" not in config["surprise"]["source_metrics"]
+    assert "object_interaction_motion" in config["surprise"]["source_metrics"]
+
+
+def test_abc_global_visual_only_experiment_has_exactly_two_sources() -> None:
+    config = load_pipeline_config(
+        config_path=(
+            Path(__file__).parents[1]
+            / "pathologist"
+            / "configs"
+            / "abc130k_global_visual_only.json"
+        )
+    )
+
+    assert config["abc130k"]["ecod_scope"] == "trajectory"
+    assert config["metrics"]["visual_patch_novelty"]["enabled"] is False
+    assert config["metrics"]["object_interaction_motion"]["enabled"] is True
+    assert config["surprise"]["source_metrics"] == [
+        "visual_flow",
+        "object_residual_speed",
+        "gripper_object_relative_speed",
+        "gripper_object_separation_speed",
+    ]
 
 
 def test_abc_cli_accepts_independent_flow_strides_and_robot_masking() -> None:
@@ -170,6 +512,23 @@ def test_abc_running_metrics_message_reports_both_recalls() -> None:
     )
 
     assert message == "  running [5/10] metric: P=12.5% SegR=40.0% TrajR=60.0%"
+
+
+def test_abc_running_metrics_message_handles_no_selected_peaks() -> None:
+    message = _running_metrics_message(
+        {
+            "metric": {
+                "point_precision_at_k": None,
+                "failed_segment_recall_at_k": 0.0,
+                "episode_recall_at_k": 0.0,
+            }
+        },
+        selectors=["metric"],
+        completed_count=1,
+        total_count=280,
+    )
+
+    assert message == "  running [1/280] metric: P=0.0% SegR=0.0% TrajR=0.0%"
 
 
 def test_abc_robot_topics_map_to_metric_streams(tmp_path: Path) -> None:

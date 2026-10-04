@@ -1,0 +1,37 @@
+{
+  "bootstrap_samples": 10000,
+  "data_root": "/media/helen/28TB_VOL4/ViFailback-Dataset",
+  "discovered_failure_episode_count": 4545,
+  "error_count": 0,
+  "eval_path": "/home/helen/Documents/TrajectoryPathologist/ViFailBack_localization_k2/vifailback_localization_eval.jsonl",
+  "frame_cache_dir": "/home/helen/Documents/TrajectoryPathologist/ViFailBack_localization_k2/frame_cache",
+  "ground_truth": "avoid_keyframe_exact_source_frame",
+  "keep_frame_cache": false,
+  "manifest_path": "/home/helen/Documents/TrajectoryPathologist/ViFailBack_localization_k2/vifailback_manifest.json",
+  "output_dir": "/home/helen/Documents/TrajectoryPathologist/ViFailBack_localization_k2",
+  "processed_episode_count": 2123,
+  "sample_rate_hz": 25.0,
+  "seed": 0,
+  "selected_failure_episode_count": 4545,
+  "selectors": [
+    "random",
+    "kite_flow",
+    "metric"
+  ],
+  "smoothing_window": 11,
+  "stats_path": "/home/helen/Documents/TrajectoryPathologist/ViFailBack_localization_k2/vifailback_localization_stats.json",
+  "status": "running",
+  "tolerance_frames": [
+    0,
+    6,
+    12,
+    25
+  ],
+  "tolerance_seconds": [
+    0.0,
+    0.24,
+    0.48,
+    1.0
+  ],
+  "top_k": 2
+}

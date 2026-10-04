@@ -37,6 +37,14 @@ class VisualFlowMetric:
             0,
             int(robot_masking_config.get("dilation_px", 0)),
         )
+        if config.get("enabled") is False:
+            return _unavailable_result(
+                configured_camera_names=camera_names,
+                frame_stride=frame_stride,
+                resize_shape=resize_shape,
+                robot_masking_enabled=robot_masking_enabled,
+                reason="disabled by metrics.visual_flow.enabled",
+            )
         grouped_frames = _group_configured_frames(context.bundle.camera_frames, camera_names)
         matched_camera_names = sorted(grouped_frames)
         if not matched_camera_names:

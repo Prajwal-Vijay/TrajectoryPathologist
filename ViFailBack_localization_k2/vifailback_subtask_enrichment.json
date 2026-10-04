@@ -1,0 +1,534 @@
+{
+  "definition": {
+    "caveat": "ViFailBack has no full subtask boundaries; avoid-to-correct is a failure-subtask proxy interval.",
+    "duration_ratio": "summed family proxy-segment duration / summed duration of all evaluated trajectories",
+    "peak_ratio": "peaks in this family segment / all selected peaks for selector",
+    "segment": "inclusive peak test on [avoid_keyframe, correct_keyframe]; duration=(correct_frame-avoid_frame)/25"
+  },
+  "evaluated_trajectory_count": 1950,
+  "evaluation_row_count": 5850,
+  "selectors": [
+    "kite_flow",
+    "metric",
+    "random"
+  ],
+  "status": "interim_snapshot",
+  "subtask_families": [
+    {
+      "failure_type_counts": {
+        "gripper 6d-pose": 1059,
+        "gripper state": 132,
+        "human intervention": 73,
+        "task planning": 285
+      },
+      "segment_duration_fraction_of_all_trajectory_time": 0.2433330615885564,
+      "segment_duration_sec": 4059.3599999999938,
+      "selectors": {
+        "kite_flow": {
+          "enrichment_over_duration_coverage": 1.3329835750286245,
+          "peak_fraction_of_all_peaks": 0.3243589743589744,
+          "peak_precision_within_family_episodes": 0.40832795351839896,
+          "peaks_in_segment": 1265,
+          "total_peaks_all_trajectories": 3900
+        },
+        "metric": {
+          "enrichment_over_duration_coverage": 0.9778725356731727,
+          "peak_fraction_of_all_peaks": 0.23794871794871794,
+          "peak_precision_within_family_episodes": 0.29954809554551326,
+          "peaks_in_segment": 928,
+          "total_peaks_all_trajectories": 3900
+        },
+        "random": {
+          "enrichment_over_duration_coverage": 1.0853542152406983,
+          "peak_fraction_of_all_peaks": 0.2641025641025641,
+          "peak_precision_within_family_episodes": 0.33247256294383476,
+          "peaks_in_segment": 1030,
+          "total_peaks_all_trajectories": 3900
+        }
+      },
+      "subtask_family": "Approach / align",
+      "top_subtask_texts": [
+        {
+          "count": 83,
+          "text": "Move the right arm to approach and align with the green cup."
+        },
+        {
+          "count": 78,
+          "text": "Move the left arm to approach and align the marker."
+        },
+        {
+          "count": 76,
+          "text": "Move the right arm to approach and align with the socket."
+        },
+        {
+          "count": 73,
+          "text": "Move the left arm to approach and align the coke bottle."
+        },
+        {
+          "count": 69,
+          "text": "Move the right arm to approach and align with the object on the table."
+        },
+        {
+          "count": 59,
+          "text": "Move the left arm to align with the white spoon."
+        },
+        {
+          "count": 57,
+          "text": "Move the right arm to align with the black box on the left."
+        },
+        {
+          "count": 56,
+          "text": "Move the left arm to align with the pot lid."
+        }
+      ],
+      "total_trajectory_duration_sec": 16682.31999999995,
+      "trajectory_count": 1549
+    },
+    {
+      "failure_type_counts": {
+        "gripper 6d-pose": 12,
+        "gripper state": 273,
+        "human intervention": 5,
+        "task planning": 2
+      },
+      "segment_duration_fraction_of_all_trajectory_time": 0.03987694757084157,
+      "segment_duration_sec": 665.2399999999997,
+      "selectors": {
+        "kite_flow": {
+          "enrichment_over_duration_coverage": 1.8068404539560767,
+          "peak_fraction_of_all_peaks": 0.07205128205128206,
+          "peak_precision_within_family_episodes": 0.4811643835616438,
+          "peaks_in_segment": 281,
+          "total_peaks_all_trajectories": 3900
+        },
+        "metric": {
+          "enrichment_over_duration_coverage": 1.1574066964843197,
+          "peak_fraction_of_all_peaks": 0.046153846153846156,
+          "peak_precision_within_family_episodes": 0.3082191780821918,
+          "peaks_in_segment": 180,
+          "total_peaks_all_trajectories": 3900
+        },
+        "random": {
+          "enrichment_over_duration_coverage": 1.1766968080923914,
+          "peak_fraction_of_all_peaks": 0.04692307692307692,
+          "peak_precision_within_family_episodes": 0.3133561643835616,
+          "peaks_in_segment": 183,
+          "total_peaks_all_trajectories": 3900
+        }
+      },
+      "subtask_family": "Grasp / pick",
+      "top_subtask_texts": [
+        {
+          "count": 29,
+          "text": "Grasp the object."
+        },
+        {
+          "count": 28,
+          "text": "Grasp the coke bottle."
+        },
+        {
+          "count": 22,
+          "text": "Grasp the marker with the right arm."
+        },
+        {
+          "count": 22,
+          "text": "Grasp the marker with the left arm."
+        },
+        {
+          "count": 21,
+          "text": "Grasp the marker in the green cup."
+        },
+        {
+          "count": 20,
+          "text": "Grasp the blue cube with the right arm."
+        },
+        {
+          "count": 17,
+          "text": "Grasp the blue cube with the left arm."
+        },
+        {
+          "count": 15,
+          "text": "Grasp the pot lid with the left arm."
+        }
+      ],
+      "total_trajectory_duration_sec": 16682.31999999995,
+      "trajectory_count": 292
+    },
+    {
+      "failure_type_counts": {
+        "gripper state": 25,
+        "human intervention": 2,
+        "task planning": 15
+      },
+      "segment_duration_fraction_of_all_trajectory_time": 0.005785766008564773,
+      "segment_duration_sec": 96.52,
+      "selectors": {
+        "kite_flow": {
+          "enrichment_over_duration_coverage": 0.7533962404496986,
+          "peak_fraction_of_all_peaks": 0.004358974358974359,
+          "peak_precision_within_family_episodes": 0.20238095238095238,
+          "peaks_in_segment": 17,
+          "total_peaks_all_trajectories": 3900
+        },
+        "metric": {
+          "enrichment_over_duration_coverage": 1.0636182218113392,
+          "peak_fraction_of_all_peaks": 0.006153846153846154,
+          "peak_precision_within_family_episodes": 0.2857142857142857,
+          "peaks_in_segment": 24,
+          "total_peaks_all_trajectories": 3900
+        },
+        "random": {
+          "enrichment_over_duration_coverage": 1.107935647720145,
+          "peak_fraction_of_all_peaks": 0.00641025641025641,
+          "peak_precision_within_family_episodes": 0.2976190476190476,
+          "peaks_in_segment": 25,
+          "total_peaks_all_trajectories": 3900
+        }
+      },
+      "subtask_family": "Place / transport",
+      "top_subtask_texts": [
+        {
+          "count": 9,
+          "text": "Move the right arm to a position above the table."
+        },
+        {
+          "count": 6,
+          "text": "Place the yellow cube into the pink bowl."
+        },
+        {
+          "count": 6,
+          "text": "Place the blue cube into the basket using the left arm."
+        },
+        {
+          "count": 5,
+          "text": "Move the left arm to position the blue cube over the basket."
+        },
+        {
+          "count": 5,
+          "text": "Move the right arm to a position where it can transfer the blue cube to the left arm."
+        },
+        {
+          "count": 3,
+          "text": "Lift the pot lid using the left arm and move it away from the pot."
+        },
+        {
+          "count": 3,
+          "text": "Place the marker into the green plate using the right arm."
+        },
+        {
+          "count": 2,
+          "text": "Lower the right arm to touch the table with the marker."
+        }
+      ],
+      "total_trajectory_duration_sec": 16682.31999999995,
+      "trajectory_count": 42
+    },
+    {
+      "failure_type_counts": {
+        "gripper 6d-pose": 1,
+        "gripper state": 38,
+        "task planning": 1
+      },
+      "segment_duration_fraction_of_all_trajectory_time": 0.0048602352670372145,
+      "segment_duration_sec": 81.08000000000001,
+      "selectors": {
+        "kite_flow": {
+          "enrichment_over_duration_coverage": 0.3692973068700733,
+          "peak_fraction_of_all_peaks": 0.0017948717948717949,
+          "peak_precision_within_family_episodes": 0.0875,
+          "peaks_in_segment": 7,
+          "total_peaks_all_trajectories": 3900
+        },
+        "metric": {
+          "enrichment_over_duration_coverage": 0.7913513718644428,
+          "peak_fraction_of_all_peaks": 0.0038461538461538464,
+          "peak_precision_within_family_episodes": 0.1875,
+          "peaks_in_segment": 15,
+          "total_peaks_all_trajectories": 3900
+        },
+        "random": {
+          "enrichment_over_duration_coverage": 0.9496216462373315,
+          "peak_fraction_of_all_peaks": 0.004615384615384616,
+          "peak_precision_within_family_episodes": 0.225,
+          "peaks_in_segment": 18,
+          "total_peaks_all_trajectories": 3900
+        }
+      },
+      "subtask_family": "Release / gripper state",
+      "top_subtask_texts": [
+        {
+          "count": 9,
+          "text": "Release the marker into the green cup."
+        },
+        {
+          "count": 8,
+          "text": "Release the blue cube into the basket using the left gripper."
+        },
+        {
+          "count": 6,
+          "text": "Release the gripper to place the coke bottle upright on the blue plate."
+        },
+        {
+          "count": 3,
+          "text": "Release the gripper to place the object into the black box."
+        },
+        {
+          "count": 2,
+          "text": "Release the left arm's grip on the marker."
+        },
+        {
+          "count": 1,
+          "text": "Release the gripper to place the bottle into the pink bowl."
+        },
+        {
+          "count": 1,
+          "text": "Release the gripper to place the knife in the drawer."
+        },
+        {
+          "count": 1,
+          "text": "Release the gripper to place the knife on the plate."
+        }
+      ],
+      "total_trajectory_duration_sec": 16682.31999999995,
+      "trajectory_count": 40
+    },
+    {
+      "failure_type_counts": {
+        "gripper 6d-pose": 5,
+        "gripper state": 2,
+        "task planning": 2
+      },
+      "segment_duration_fraction_of_all_trajectory_time": 0.001134134820576518,
+      "segment_duration_sec": 18.919999999999998,
+      "selectors": {
+        "kite_flow": {
+          "enrichment_over_duration_coverage": 1.3565067490648846,
+          "peak_fraction_of_all_peaks": 0.0015384615384615385,
+          "peak_precision_within_family_episodes": 0.3333333333333333,
+          "peaks_in_segment": 6,
+          "total_peaks_all_trajectories": 3900
+        },
+        "metric": {
+          "enrichment_over_duration_coverage": 0.4521689163549615,
+          "peak_fraction_of_all_peaks": 0.0005128205128205128,
+          "peak_precision_within_family_episodes": 0.1111111111111111,
+          "peaks_in_segment": 2,
+          "total_peaks_all_trajectories": 3900
+        },
+        "random": {
+          "enrichment_over_duration_coverage": 0.6782533745324423,
+          "peak_fraction_of_all_peaks": 0.0007692307692307692,
+          "peak_precision_within_family_episodes": 0.16666666666666666,
+          "peaks_in_segment": 3,
+          "total_peaks_all_trajectories": 3900
+        }
+      },
+      "subtask_family": "Tool use",
+      "top_subtask_texts": [
+        {
+          "count": 5,
+          "text": "Draw a black cross mark on the table."
+        },
+        {
+          "count": 2,
+          "text": "Cut a small piece of sausage."
+        },
+        {
+          "count": 1,
+          "text": "Press the rice cooker lid's buttom with the right arm."
+        },
+        {
+          "count": 1,
+          "text": "Draw a line on the table."
+        }
+      ],
+      "total_trajectory_duration_sec": 16682.31999999995,
+      "trajectory_count": 9
+    },
+    {
+      "failure_type_counts": {
+        "gripper 6d-pose": 3,
+        "gripper state": 3,
+        "task planning": 2
+      },
+      "segment_duration_fraction_of_all_trajectory_time": 0.0018390727428798928,
+      "segment_duration_sec": 30.68,
+      "selectors": {
+        "kite_flow": {
+          "enrichment_over_duration_coverage": 0.9759656336709762,
+          "peak_fraction_of_all_peaks": 0.0017948717948717949,
+          "peak_precision_within_family_episodes": 0.4375,
+          "peaks_in_segment": 7,
+          "total_peaks_all_trajectories": 3900
+        },
+        "metric": {
+          "enrichment_over_duration_coverage": 0.5576946478119864,
+          "peak_fraction_of_all_peaks": 0.0010256410256410256,
+          "peak_precision_within_family_episodes": 0.25,
+          "peaks_in_segment": 4,
+          "total_peaks_all_trajectories": 3900
+        },
+        "random": {
+          "enrichment_over_duration_coverage": 0.8365419717179796,
+          "peak_fraction_of_all_peaks": 0.0015384615384615385,
+          "peak_precision_within_family_episodes": 0.375,
+          "peaks_in_segment": 6,
+          "total_peaks_all_trajectories": 3900
+        }
+      },
+      "subtask_family": "Other move",
+      "top_subtask_texts": [
+        {
+          "count": 7,
+          "text": "Move the right arm to grasp the green duck."
+        },
+        {
+          "count": 1,
+          "text": "Move the left arm to place the pink bowl in the middle of the table."
+        }
+      ],
+      "total_trajectory_duration_sec": 16682.31999999995,
+      "trajectory_count": 8
+    },
+    {
+      "failure_type_counts": {
+        "gripper 6d-pose": 1,
+        "gripper state": 4
+      },
+      "segment_duration_fraction_of_all_trajectory_time": 0.0006186189930417371,
+      "segment_duration_sec": 10.32,
+      "selectors": {
+        "kite_flow": {
+          "enrichment_over_duration_coverage": 1.243464519976144,
+          "peak_fraction_of_all_peaks": 0.0007692307692307692,
+          "peak_precision_within_family_episodes": 0.3,
+          "peaks_in_segment": 3,
+          "total_peaks_all_trajectories": 3900
+        },
+        "metric": {
+          "enrichment_over_duration_coverage": 0.8289763466507627,
+          "peak_fraction_of_all_peaks": 0.0005128205128205128,
+          "peak_precision_within_family_episodes": 0.2,
+          "peaks_in_segment": 2,
+          "total_peaks_all_trajectories": 3900
+        },
+        "random": {
+          "enrichment_over_duration_coverage": 0.41448817332538135,
+          "peak_fraction_of_all_peaks": 0.0002564102564102564,
+          "peak_precision_within_family_episodes": 0.1,
+          "peaks_in_segment": 1,
+          "total_peaks_all_trajectories": 3900
+        }
+      },
+      "subtask_family": "Open / close articulated object",
+      "top_subtask_texts": [
+        {
+          "count": 2,
+          "text": "Open the right door."
+        },
+        {
+          "count": 1,
+          "text": "Open the paper box using the right arm."
+        },
+        {
+          "count": 1,
+          "text": "Open the left door."
+        },
+        {
+          "count": 1,
+          "text": "Open the microwave oven door using the left arm."
+        }
+      ],
+      "total_trajectory_duration_sec": 16682.31999999995,
+      "trajectory_count": 5
+    },
+    {
+      "failure_type_counts": {
+        "gripper state": 3
+      },
+      "segment_duration_fraction_of_all_trajectory_time": 0.0003884351816773698,
+      "segment_duration_sec": 6.4799999999999995,
+      "selectors": {
+        "kite_flow": {
+          "enrichment_over_duration_coverage": 1.980332383665711,
+          "peak_fraction_of_all_peaks": 0.0007692307692307692,
+          "peak_precision_within_family_episodes": 0.5,
+          "peaks_in_segment": 3,
+          "total_peaks_all_trajectories": 3900
+        },
+        "metric": {
+          "enrichment_over_duration_coverage": 0.0,
+          "peak_fraction_of_all_peaks": 0.0,
+          "peak_precision_within_family_episodes": 0.0,
+          "peaks_in_segment": 0,
+          "total_peaks_all_trajectories": 3900
+        },
+        "random": {
+          "enrichment_over_duration_coverage": 1.320221589110474,
+          "peak_fraction_of_all_peaks": 0.0005128205128205128,
+          "peak_precision_within_family_episodes": 0.3333333333333333,
+          "peaks_in_segment": 2,
+          "total_peaks_all_trajectories": 3900
+        }
+      },
+      "subtask_family": "Pull / push / drag",
+      "top_subtask_texts": [
+        {
+          "count": 2,
+          "text": "Pull the microwave oven door open with the left arm."
+        },
+        {
+          "count": 1,
+          "text": "Pull the drawer open with the right arm."
+        }
+      ],
+      "total_trajectory_duration_sec": 16682.31999999995,
+      "trajectory_count": 3
+    },
+    {
+      "failure_type_counts": {
+        "gripper state": 2
+      },
+      "segment_duration_fraction_of_all_trajectory_time": 0.00024217255153959476,
+      "segment_duration_sec": 4.04,
+      "selectors": {
+        "kite_flow": {
+          "enrichment_over_duration_coverage": 3.1763747143945067,
+          "peak_fraction_of_all_peaks": 0.0007692307692307692,
+          "peak_precision_within_family_episodes": 0.75,
+          "peaks_in_segment": 3,
+          "total_peaks_all_trajectories": 3900
+        },
+        "metric": {
+          "enrichment_over_duration_coverage": 0.0,
+          "peak_fraction_of_all_peaks": 0.0,
+          "peak_precision_within_family_episodes": 0.0,
+          "peaks_in_segment": 0,
+          "total_peaks_all_trajectories": 3900
+        },
+        "random": {
+          "enrichment_over_duration_coverage": 0.0,
+          "peak_fraction_of_all_peaks": 0.0,
+          "peak_precision_within_family_episodes": 0.0,
+          "peaks_in_segment": 0,
+          "total_peaks_all_trajectories": 3900
+        }
+      },
+      "subtask_family": "Lift / retract",
+      "top_subtask_texts": [
+        {
+          "count": 2,
+          "text": "Lift the right arm from the table after drawing."
+        }
+      ],
+      "total_trajectory_duration_sec": 16682.31999999995,
+      "trajectory_count": 2
+    }
+  ],
+  "total_peaks_by_selector": {
+    "kite_flow": 3900,
+    "metric": 3900,
+    "random": 3900
+  },
+  "total_trajectory_duration_sec": 16682.31999999995
+}

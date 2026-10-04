@@ -3,11 +3,18 @@
 from pathologist.metrics.audio import AudioSpectralFluxMetric
 from pathologist.metrics.base import MetricComputationContext, MetricComputer
 from pathologist.metrics.engine import MetricEngine, default_metric_computers
+from pathologist.metrics.excess_path import (
+    EefExcessPathMetric,
+    GripperExcessPathMetric,
+    JointExcessPathMetric,
+    windowed_excess_path,
+)
 from pathologist.metrics.gripper import (
     GripperApertureSpeedMetric,
     GripperChatterMetric,
     GripperTransitionMetric,
 )
+from pathologist.metrics.grasp_integrity import GraspIntegrityMetric
 from pathologist.metrics.kinematics import (
     EefAngularJerkMetric,
     EefAngularVelocitySpikeMetric,
@@ -46,11 +53,15 @@ __all__ = [
     "EefTranslationalStallingMetric",
     "EndEffectorCartesianPathLengthMetric",
     "ECODSurpriseScorer",
+    "EefExcessPathMetric",
     "ForceNormMetric",
     "FrozenDinoPatchNoveltyMetric",
     "GripperApertureSpeedMetric",
+    "GraspIntegrityMetric",
     "GripperChatterMetric",
     "GripperTransitionMetric",
+    "GripperExcessPathMetric",
+    "JointExcessPathMetric",
     "JointPathLengthMetric",
     "MetricComputationContext",
     "MetricComputer",
@@ -63,4 +74,5 @@ __all__ = [
     "VisualFlowMetric",
     "default_metric_computers",
     "ecod_scores",
+    "windowed_excess_path",
 ]

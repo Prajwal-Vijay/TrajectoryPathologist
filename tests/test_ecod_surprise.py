@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import math
 
+import pytest
+
 from pathologist.metrics.surprise import ECODSurpriseScorer, ecod_scores
 from pathologist.schemas import MetricProfile, MetricResult, MetricSample
 
@@ -153,6 +155,90 @@ def test_ecod_surprise_supports_max_reduction_across_metrics() -> None:
             expected_right,
             expected_skew,
         )
+
+
+def test_ecod_surprise_aggregates_one_available_source_metric() -> None:
+    profile = MetricProfile(
+        bundle_id="single-source",
+        metrics=[_metric("visual_flow")],
+    )
+    scorer = ECODSurpriseScorer(
+        config={
+            "surprise": {
+                "source_metrics": [
+                    "visual_flow",
+                    "unavailable_interaction",
+                ],
+                "aggregation_groups": {
+                    "motion": ["visual_flow"],
+                    "interaction": ["unavailable_interaction"],
+                },
+            }
+        }
+    )
+
+    aggregate = scorer.score_aggregate_metric(profile)
+
+    assert aggregate is not None
+    assert aggregate.metadata["available"] is True
+    assert aggregate.metadata["source_metric_names"] == ["visual_flow"]
+    assert aggregate.metadata["aggregation_groups"] == {
+        "motion": ["visual_flow"]
+    }
+    assert len(aggregate.samples) == 3
+
+
+def test_ecod_surprise_divides_feature_scores_by_log_n_before_sum() -> None:
+    profile = MetricProfile(
+        bundle_id="log-normalized",
+        metrics=[
+            MetricResult(
+                name=name,
+                description=name,
+                samples=[
+                    MetricSample(timestamp_sec=float(index), value=value)
+                    for index, value in enumerate(values)
+                ],
+            )
+            for name, values in (
+                ("action_discontinuity", [0.0, 1.0, 2.0, 9.0]),
+                ("visual_flow", [4.0, 2.0, 1.0, 0.0]),
+            )
+        ],
+    )
+    base_config = {
+        "surprise": {
+            "source_metrics": ["action_discontinuity", "visual_flow"],
+            "aggregation_reduction": "sum",
+        }
+    }
+    normalized_config = {
+        "surprise": {
+            **base_config["surprise"],
+            "pre_aggregation_log_sample_normalization": True,
+        }
+    }
+
+    base = ECODSurpriseScorer(config=base_config).score_aggregate_metric(profile)
+    normalized = ECODSurpriseScorer(
+        config=normalized_config
+    ).score_aggregate_metric(profile)
+
+    assert base is not None
+    assert normalized is not None
+    divisor = math.log(4)
+    assert normalized.metadata["pre_aggregation_log_sample_normalization"] is True
+    assert normalized.metadata["pre_aggregation_sample_count"] == 4
+    assert normalized.metadata["pre_aggregation_normalization_divisor"] == divisor
+    for metric_name, base_scores in base.metadata[
+        "feature_left_tail_scores"
+    ].items():
+        assert normalized.metadata["feature_left_tail_scores"][metric_name] == [
+            score / divisor for score in base_scores
+        ]
+    assert [sample.value for sample in normalized.samples] == pytest.approx([
+        sample.value / divisor for sample in base.samples
+    ])
 
 
 def test_ecod_surprise_maxes_group_scores_instead_of_combining_raw_vectors() -> None:

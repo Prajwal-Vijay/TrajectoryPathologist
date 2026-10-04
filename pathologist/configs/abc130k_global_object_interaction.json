@@ -1,0 +1,63 @@
+{
+  "abc130k": {
+    "ecod_scope": "trajectory"
+  },
+  "metrics": {
+    "visual_patch_novelty": {
+      "enabled": false
+    },
+    "object_interaction_motion": {
+      "enabled": true,
+      "camera_names": [
+        "top",
+        "left_wrist",
+        "right_wrist"
+      ],
+      "sample_period_sec": 0.5,
+      "chunk_size_frames": 32,
+      "tracker_resize": [384, 384],
+      "object_point_count": 48,
+      "gripper_point_count": 24,
+      "background_point_count": 96,
+      "segmentation": {
+        "gripper_prompt": "robot gripper.",
+        "object_prompt": "object held by robot. manipulated object. tool. component. part.",
+        "cache_dir": "/media/helen/28TB_VOL4/ABC130K_global_object_interaction_k5/interaction_mask_cache",
+        "chunk_size_frames": 32,
+        "device": "auto"
+      },
+      "tracking": {
+        "model_name": "cotracker3_offline",
+        "device": "auto"
+      }
+    }
+  },
+  "selector": {
+    "surprise_flood": {
+      "rolling_baseline": {
+        "enabled": false
+      },
+      "ranking": "persistence",
+      "max_proposals": 5
+    }
+  },
+  "surprise": {
+    "source_metrics": [
+      "action_discontinuity",
+      "motion_smoothness",
+      "velocity_spike",
+      "stalling",
+      "eef_linear_velocity_spike",
+      "eef_angular_velocity_spike",
+      "eef_translational_stalling",
+      "eef_rotational_stalling",
+      "eef_translational_jerk",
+      "eef_angular_jerk",
+      "gripper_aperture_speed",
+      "visual_flow",
+      "object_interaction_motion",
+      "audio_spectral_flux"
+    ],
+    "aggregation_reduction": "sum"
+  }
+}

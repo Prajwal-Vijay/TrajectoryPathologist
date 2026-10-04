@@ -1,0 +1,40 @@
+{
+  "abc130k": {
+    "ecod_scope": "annotated_subtask"
+  },
+  "metrics": {
+    "visual_patch_novelty": {
+      "enabled": false
+    },
+    "object_interaction_motion": {
+      "enabled": false
+    }
+  },
+  "selector": {
+    "surprise_flood": {
+      "rolling_baseline": {
+        "enabled": false
+      },
+      "ranking": "persistence",
+      "max_proposals": 5
+    }
+  },
+  "surprise": {
+    "source_metrics": [
+      "action_discontinuity",
+      "motion_smoothness",
+      "velocity_spike",
+      "stalling",
+      "eef_linear_velocity_spike",
+      "eef_angular_velocity_spike",
+      "eef_translational_stalling",
+      "eef_rotational_stalling",
+      "eef_translational_jerk",
+      "eef_angular_jerk",
+      "gripper_aperture_speed",
+      "visual_flow",
+      "audio_spectral_flux"
+    ],
+    "aggregation_reduction": "sum"
+  }
+}

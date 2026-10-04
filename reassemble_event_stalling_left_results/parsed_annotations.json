@@ -1,0 +1,1781 @@
+{
+  "annotations_path": "/home/helen/Documents/TrajectoryPathologist/REASSEMBLE_Successful_Balanced/annotations.txt",
+  "labels": [
+    "approach",
+    "first contact",
+    "gripper close",
+    "gripper open",
+    "active push",
+    "active pull",
+    "engaged rotation"
+  ],
+  "demo_count": 60,
+  "scoreable_demo_count": 49,
+  "event_count": 165,
+  "parse_notes": [
+    {
+      "line_number": 34,
+      "demo_id": "2025-01-09-14-11-58_high_31",
+      "raw_line": "engaged rotation - 10-21s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 15.5
+    },
+    {
+      "line_number": 41,
+      "demo_id": "2025-01-09-14-28-47_high_11",
+      "raw_line": "engaged rotation - 15-44s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 29.5
+    },
+    {
+      "line_number": 67,
+      "demo_id": "2025-01-09-15-30-21_high_31",
+      "raw_line": "engaged rotation - 14-21s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 17.5
+    },
+    {
+      "line_number": 70,
+      "demo_id": "2025-01-09-15-30-21_high_8",
+      "raw_line": "weird demo",
+      "reason": "annotator_comment"
+    },
+    {
+      "line_number": 95,
+      "demo_id": "2025-01-09-16-44-57_high_8",
+      "raw_line": "engaged rotation - 24-58s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 41.0
+    },
+    {
+      "line_number": 107,
+      "demo_id": "2025-01-09-16-55-42_high_33",
+      "raw_line": "engaged rotation - 13-20s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 16.5
+    },
+    {
+      "line_number": 124,
+      "demo_id": "2025-01-09-18-00-33_high_24",
+      "raw_line": "engaged rotation - 7-19s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 13.0
+    },
+    {
+      "line_number": 150,
+      "demo_id": "2025-01-10-15-40-55_high_40",
+      "raw_line": "weird trajectory",
+      "reason": "annotator_comment"
+    },
+    {
+      "line_number": 179,
+      "demo_id": "2025-01-10-16-30-49_high_14",
+      "raw_line": "push - 8-12s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "active push",
+      "reference_sec": 10.0
+    },
+    {
+      "line_number": 188,
+      "demo_id": "2025-01-10-17-25-29_high_31",
+      "raw_line": "active push - 34-39s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "active push",
+      "reference_sec": 36.5
+    },
+    {
+      "line_number": 190,
+      "demo_id": "2025-01-10-17-25-29_high_31",
+      "raw_line": "engaged rotation - 11-39s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 25.0
+    },
+    {
+      "line_number": 196,
+      "demo_id": "2025-01-10-17-36-05_high_19",
+      "raw_line": "engaged rotation - 5-20s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 12.5
+    },
+    {
+      "line_number": 209,
+      "demo_id": "2025-01-10-17-54-09_high_6",
+      "raw_line": "approach - 3-6s,",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "approach",
+      "reference_sec": 4.5
+    },
+    {
+      "line_number": 210,
+      "demo_id": "2025-01-10-17-54-09_high_6",
+      "raw_line": "weird trajectory",
+      "reason": "annotator_comment"
+    },
+    {
+      "line_number": 213,
+      "demo_id": "2025-01-10-18-03-36_high_3",
+      "raw_line": "approach - 3-5s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "approach",
+      "reference_sec": 4.0
+    },
+    {
+      "line_number": 222,
+      "demo_id": "2025-01-10-18-03-36_high_9",
+      "raw_line": "engaged rotation - 10-20s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 15.0
+    },
+    {
+      "line_number": 233,
+      "demo_id": "2025-01-10-18-31-44_high_24",
+      "raw_line": "approach - 3.27-6.4s,",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "approach",
+      "reference_sec": 4.835
+    },
+    {
+      "line_number": 251,
+      "demo_id": "2025-01-11-11-35-53_high_1",
+      "raw_line": "stalling - 0-3s",
+      "reason": "excluded_label",
+      "excluded_label": "stall"
+    },
+    {
+      "line_number": 257,
+      "demo_id": "2025-01-11-12-22-42_high_25",
+      "raw_line": "engaged rotation - 6-21s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 13.5
+    },
+    {
+      "line_number": 262,
+      "demo_id": "2025-01-11-12-22-42_high_31",
+      "raw_line": "stall - 12-20s",
+      "reason": "excluded_label",
+      "excluded_label": "stall"
+    },
+    {
+      "line_number": 281,
+      "demo_id": "2025-01-11-15-10-57_high_31",
+      "raw_line": "engaged rotation - 10-20s",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "engaged rotation",
+      "reference_sec": 15.0
+    },
+    {
+      "line_number": 285,
+      "demo_id": "2025-01-13-09-43-29_high_22",
+      "raw_line": "approach - 2-4s,",
+      "reason": "range_without_peak_used_midpoint",
+      "label": "approach",
+      "reference_sec": 3.0
+    }
+  ],
+  "events_by_demo": {
+    "2025-01-09-13-59-54_high_34": [
+      {
+        "demo_id": "2025-01-09-13-59-54_high_34",
+        "label": "approach",
+        "start_sec": 4.0,
+        "end_sec": 7.0,
+        "reference_sec": 4.0,
+        "is_instant": false,
+        "raw_line": "approach - 4-7s, 4s"
+      },
+      {
+        "demo_id": "2025-01-09-13-59-54_high_34",
+        "label": "first contact",
+        "start_sec": 11.0,
+        "end_sec": 11.0,
+        "reference_sec": 11.0,
+        "is_instant": true,
+        "raw_line": "first contact - 11s"
+      },
+      {
+        "demo_id": "2025-01-09-13-59-54_high_34",
+        "label": "active push",
+        "start_sec": 42.0,
+        "end_sec": 43.0,
+        "reference_sec": 42.5,
+        "is_instant": false,
+        "raw_line": "push - 42-43s, 42.5"
+      },
+      {
+        "demo_id": "2025-01-09-13-59-54_high_34",
+        "label": "gripper open",
+        "start_sec": 43.67,
+        "end_sec": 43.67,
+        "reference_sec": 43.67,
+        "is_instant": true,
+        "raw_line": "gripper open - 43.67s"
+      }
+    ],
+    "2025-01-09-14-11-58_high_31": [
+      {
+        "demo_id": "2025-01-09-14-11-58_high_31",
+        "label": "approach",
+        "start_sec": 2.0,
+        "end_sec": 6.0,
+        "reference_sec": 4.2,
+        "is_instant": false,
+        "raw_line": "approach - 2-6s, 4.2s"
+      },
+      {
+        "demo_id": "2025-01-09-14-11-58_high_31",
+        "label": "first contact",
+        "start_sec": 10.0,
+        "end_sec": 10.0,
+        "reference_sec": 10.0,
+        "is_instant": true,
+        "raw_line": "first contact - 10s"
+      },
+      {
+        "demo_id": "2025-01-09-14-11-58_high_31",
+        "label": "gripper close",
+        "start_sec": 10.0,
+        "end_sec": 10.0,
+        "reference_sec": 10.0,
+        "is_instant": true,
+        "raw_line": "gripper close - 10s"
+      },
+      {
+        "demo_id": "2025-01-09-14-11-58_high_31",
+        "label": "engaged rotation",
+        "start_sec": 10.0,
+        "end_sec": 21.0,
+        "reference_sec": 15.5,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 10-21s"
+      },
+      {
+        "demo_id": "2025-01-09-14-11-58_high_31",
+        "label": "active pull",
+        "start_sec": 19.0,
+        "end_sec": 21.0,
+        "reference_sec": 20.6,
+        "is_instant": false,
+        "raw_line": "pull - 19-21s, 20.6s"
+      }
+    ],
+    "2025-01-09-14-28-47_high_11": [
+      {
+        "demo_id": "2025-01-09-14-28-47_high_11",
+        "label": "first contact",
+        "start_sec": 14.0,
+        "end_sec": 14.0,
+        "reference_sec": 14.0,
+        "is_instant": true,
+        "raw_line": "first contact - 14s"
+      },
+      {
+        "demo_id": "2025-01-09-14-28-47_high_11",
+        "label": "engaged rotation",
+        "start_sec": 15.0,
+        "end_sec": 44.0,
+        "reference_sec": 29.5,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 15-44s"
+      },
+      {
+        "demo_id": "2025-01-09-14-28-47_high_11",
+        "label": "active push",
+        "start_sec": 36.0,
+        "end_sec": 40.0,
+        "reference_sec": 39.2,
+        "is_instant": false,
+        "raw_line": "insertion - 36-40s, 39.2s"
+      },
+      {
+        "demo_id": "2025-01-09-14-28-47_high_11",
+        "label": "gripper open",
+        "start_sec": 44.0,
+        "end_sec": 44.0,
+        "reference_sec": 44.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 44s"
+      }
+    ],
+    "2025-01-09-14-28-47_high_25": [
+      {
+        "demo_id": "2025-01-09-14-28-47_high_25",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 7.0,
+        "reference_sec": 5.2,
+        "is_instant": false,
+        "raw_line": "approach - 3-7s, 5.2s"
+      },
+      {
+        "demo_id": "2025-01-09-14-28-47_high_25",
+        "label": "first contact",
+        "start_sec": 12.9,
+        "end_sec": 12.9,
+        "reference_sec": 12.9,
+        "is_instant": true,
+        "raw_line": "first contact - 12.9s"
+      },
+      {
+        "demo_id": "2025-01-09-14-28-47_high_25",
+        "label": "gripper close",
+        "start_sec": 12.9,
+        "end_sec": 12.9,
+        "reference_sec": 12.9,
+        "is_instant": true,
+        "raw_line": "gripper close - 12.9s"
+      },
+      {
+        "demo_id": "2025-01-09-14-28-47_high_25",
+        "label": "active pull",
+        "start_sec": 12.9,
+        "end_sec": 13.4,
+        "reference_sec": 13.02,
+        "is_instant": false,
+        "raw_line": "pull - 12.9-13.4s, 13.02s"
+      }
+    ],
+    "2025-01-09-14-28-47_high_27": [
+      {
+        "demo_id": "2025-01-09-14-28-47_high_27",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 5.0,
+        "reference_sec": 4.0,
+        "is_instant": false,
+        "raw_line": "approach - 3-5s, 4s"
+      },
+      {
+        "demo_id": "2025-01-09-14-28-47_high_27",
+        "label": "first contact",
+        "start_sec": 8.0,
+        "end_sec": 8.0,
+        "reference_sec": 8.0,
+        "is_instant": true,
+        "raw_line": "first contact - 8s"
+      },
+      {
+        "demo_id": "2025-01-09-14-28-47_high_27",
+        "label": "active push",
+        "start_sec": 9.0,
+        "end_sec": 11.0,
+        "reference_sec": 10.0,
+        "is_instant": false,
+        "raw_line": "insert - 9-11s, 10s"
+      },
+      {
+        "demo_id": "2025-01-09-14-28-47_high_27",
+        "label": "gripper open",
+        "start_sec": 11.0,
+        "end_sec": 11.0,
+        "reference_sec": 11.0,
+        "is_instant": true,
+        "raw_line": "release - 11s"
+      },
+      {
+        "demo_id": "2025-01-09-14-28-47_high_27",
+        "label": "gripper open",
+        "start_sec": 11.0,
+        "end_sec": 11.0,
+        "reference_sec": 11.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 11s"
+      }
+    ],
+    "2025-01-09-15-18-29_high_3": [
+      {
+        "demo_id": "2025-01-09-15-18-29_high_3",
+        "label": "approach",
+        "start_sec": 4.0,
+        "end_sec": 6.0,
+        "reference_sec": 5.0,
+        "is_instant": false,
+        "raw_line": "approach - 4-6s, 5s"
+      },
+      {
+        "demo_id": "2025-01-09-15-18-29_high_3",
+        "label": "first contact",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "first contact - 12s"
+      },
+      {
+        "demo_id": "2025-01-09-15-18-29_high_3",
+        "label": "gripper close",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "gripper close - 12s"
+      },
+      {
+        "demo_id": "2025-01-09-15-18-29_high_3",
+        "label": "active pull",
+        "start_sec": 12.0,
+        "end_sec": 14.0,
+        "reference_sec": 12.7,
+        "is_instant": false,
+        "raw_line": "pull - 12-14s,12.7s"
+      }
+    ],
+    "2025-01-09-15-30-21_high_31": [
+      {
+        "demo_id": "2025-01-09-15-30-21_high_31",
+        "label": "approach",
+        "start_sec": 2.0,
+        "end_sec": 6.0,
+        "reference_sec": 4.3,
+        "is_instant": false,
+        "raw_line": "approach - 2-6s, 4.3s"
+      },
+      {
+        "demo_id": "2025-01-09-15-30-21_high_31",
+        "label": "first contact",
+        "start_sec": 14.0,
+        "end_sec": 14.0,
+        "reference_sec": 14.0,
+        "is_instant": true,
+        "raw_line": "first contact - 14s"
+      },
+      {
+        "demo_id": "2025-01-09-15-30-21_high_31",
+        "label": "gripper close",
+        "start_sec": 14.0,
+        "end_sec": 14.0,
+        "reference_sec": 14.0,
+        "is_instant": true,
+        "raw_line": "gripper close - 14s"
+      },
+      {
+        "demo_id": "2025-01-09-15-30-21_high_31",
+        "label": "engaged rotation",
+        "start_sec": 14.0,
+        "end_sec": 21.0,
+        "reference_sec": 17.5,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 14-21s"
+      },
+      {
+        "demo_id": "2025-01-09-15-30-21_high_31",
+        "label": "active pull",
+        "start_sec": 19.0,
+        "end_sec": 21.0,
+        "reference_sec": 20.1,
+        "is_instant": false,
+        "raw_line": "pull - 19-21s, 20.1s"
+      }
+    ],
+    "2025-01-09-15-30-21_high_8": [
+      {
+        "demo_id": "2025-01-09-15-30-21_high_8",
+        "label": "approach",
+        "start_sec": 6.5,
+        "end_sec": 8.5,
+        "reference_sec": 7.8,
+        "is_instant": false,
+        "raw_line": "approach - 6.5-8.5s, 7.8s"
+      },
+      {
+        "demo_id": "2025-01-09-15-30-21_high_8",
+        "label": "gripper open",
+        "start_sec": 8.5,
+        "end_sec": 8.5,
+        "reference_sec": 8.5,
+        "is_instant": true,
+        "raw_line": "release - 8.5s"
+      }
+    ],
+    "2025-01-09-15-37-27_high_18": [
+      {
+        "demo_id": "2025-01-09-15-37-27_high_18",
+        "label": "approach",
+        "start_sec": 6.0,
+        "end_sec": 8.0,
+        "reference_sec": 7.0,
+        "is_instant": false,
+        "raw_line": "approach-6-8s, 7s"
+      },
+      {
+        "demo_id": "2025-01-09-15-37-27_high_18",
+        "label": "first contact",
+        "start_sec": 15.0,
+        "end_sec": 15.0,
+        "reference_sec": 15.0,
+        "is_instant": true,
+        "raw_line": "first contact - 15s"
+      },
+      {
+        "demo_id": "2025-01-09-15-37-27_high_18",
+        "label": "gripper close",
+        "start_sec": 15.0,
+        "end_sec": 15.0,
+        "reference_sec": 15.0,
+        "is_instant": true,
+        "raw_line": "gripper close - 15s"
+      },
+      {
+        "demo_id": "2025-01-09-15-37-27_high_18",
+        "label": "active pull",
+        "start_sec": 15.0,
+        "end_sec": 16.0,
+        "reference_sec": 15.2,
+        "is_instant": false,
+        "raw_line": "pull - 15-16s, 15.2s"
+      }
+    ],
+    "2025-01-09-15-37-27_high_20": [
+      {
+        "demo_id": "2025-01-09-15-37-27_high_20",
+        "label": "first contact",
+        "start_sec": 15.53,
+        "end_sec": 15.53,
+        "reference_sec": 15.53,
+        "is_instant": true,
+        "raw_line": "first contact - 15.53s"
+      },
+      {
+        "demo_id": "2025-01-09-15-37-27_high_20",
+        "label": "gripper close",
+        "start_sec": 15.53,
+        "end_sec": 15.53,
+        "reference_sec": 15.53,
+        "is_instant": true,
+        "raw_line": "gripper closed - 15.53s"
+      },
+      {
+        "demo_id": "2025-01-09-15-37-27_high_20",
+        "label": "active pull",
+        "start_sec": 15.3,
+        "end_sec": 16.9,
+        "reference_sec": 15.6,
+        "is_instant": false,
+        "raw_line": "pull - 15.3-16.9s, 15.6s"
+      }
+    ],
+    "2025-01-09-16-44-57_high_3": [
+      {
+        "demo_id": "2025-01-09-16-44-57_high_3",
+        "label": "first contact",
+        "start_sec": 15.0,
+        "end_sec": 15.0,
+        "reference_sec": 15.0,
+        "is_instant": true,
+        "raw_line": "first contact - 15s"
+      },
+      {
+        "demo_id": "2025-01-09-16-44-57_high_3",
+        "label": "gripper close",
+        "start_sec": 15.0,
+        "end_sec": 15.0,
+        "reference_sec": 15.0,
+        "is_instant": true,
+        "raw_line": "gripper close - 15s"
+      },
+      {
+        "demo_id": "2025-01-09-16-44-57_high_3",
+        "label": "active pull",
+        "start_sec": 15.5,
+        "end_sec": 18.0,
+        "reference_sec": 16.0,
+        "is_instant": false,
+        "raw_line": "pull - 15.5-18s, 16s"
+      }
+    ],
+    "2025-01-09-16-44-57_high_8": [
+      {
+        "demo_id": "2025-01-09-16-44-57_high_8",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 5.0,
+        "reference_sec": 4.8,
+        "is_instant": false,
+        "raw_line": "approach - 3-5s, 4.8s"
+      },
+      {
+        "demo_id": "2025-01-09-16-44-57_high_8",
+        "label": "first contact",
+        "start_sec": 11.0,
+        "end_sec": 11.0,
+        "reference_sec": 11.0,
+        "is_instant": true,
+        "raw_line": "first contact - 11s"
+      },
+      {
+        "demo_id": "2025-01-09-16-44-57_high_8",
+        "label": "engaged rotation",
+        "start_sec": 24.0,
+        "end_sec": 58.0,
+        "reference_sec": 41.0,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 24-58s"
+      },
+      {
+        "demo_id": "2025-01-09-16-44-57_high_8",
+        "label": "active push",
+        "start_sec": 46.0,
+        "end_sec": 50.0,
+        "reference_sec": 48.0,
+        "is_instant": false,
+        "raw_line": "active push, 46-50 48s"
+      },
+      {
+        "demo_id": "2025-01-09-16-44-57_high_8",
+        "label": "gripper open",
+        "start_sec": 58.0,
+        "end_sec": 58.0,
+        "reference_sec": 58.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 58s"
+      }
+    ],
+    "2025-01-09-16-44-57_high_9": [
+      {
+        "demo_id": "2025-01-09-16-44-57_high_9",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 6.0,
+        "reference_sec": 5.8,
+        "is_instant": false,
+        "raw_line": "approach - 3-6s , 5.8s"
+      },
+      {
+        "demo_id": "2025-01-09-16-44-57_high_9",
+        "label": "first contact",
+        "start_sec": 13.0,
+        "end_sec": 13.0,
+        "reference_sec": 13.0,
+        "is_instant": true,
+        "raw_line": "first contact - 13s"
+      },
+      {
+        "demo_id": "2025-01-09-16-44-57_high_9",
+        "label": "gripper close",
+        "start_sec": 13.0,
+        "end_sec": 13.0,
+        "reference_sec": 13.0,
+        "is_instant": true,
+        "raw_line": "gripper close - 13s"
+      }
+    ],
+    "2025-01-09-16-55-42_high_33": [
+      {
+        "demo_id": "2025-01-09-16-55-42_high_33",
+        "label": "gripper open",
+        "start_sec": 1.0,
+        "end_sec": 1.0,
+        "reference_sec": 1.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 1s"
+      },
+      {
+        "demo_id": "2025-01-09-16-55-42_high_33",
+        "label": "first contact",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "first contact - 12s"
+      },
+      {
+        "demo_id": "2025-01-09-16-55-42_high_33",
+        "label": "gripper close",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "gripper close - 12s"
+      },
+      {
+        "demo_id": "2025-01-09-16-55-42_high_33",
+        "label": "engaged rotation",
+        "start_sec": 13.0,
+        "end_sec": 20.0,
+        "reference_sec": 16.5,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 13-20s"
+      },
+      {
+        "demo_id": "2025-01-09-16-55-42_high_33",
+        "label": "active pull",
+        "start_sec": 15.0,
+        "end_sec": 20.0,
+        "reference_sec": 18.2,
+        "is_instant": false,
+        "raw_line": "pull - 15-20s, 18.2s"
+      }
+    ],
+    "2025-01-09-16-55-42_high_34": [
+      {
+        "demo_id": "2025-01-09-16-55-42_high_34",
+        "label": "gripper open",
+        "start_sec": 9.0,
+        "end_sec": 9.0,
+        "reference_sec": 9.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 9s"
+      }
+    ],
+    "2025-01-09-17-03-05_high_5": [
+      {
+        "demo_id": "2025-01-09-17-03-05_high_5",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 7.0,
+        "reference_sec": 4.43,
+        "is_instant": false,
+        "raw_line": "approach - 3-7s, 4.43s"
+      },
+      {
+        "demo_id": "2025-01-09-17-03-05_high_5",
+        "label": "first contact",
+        "start_sec": 9.0,
+        "end_sec": 9.0,
+        "reference_sec": 9.0,
+        "is_instant": true,
+        "raw_line": "first contact - 9s"
+      }
+    ],
+    "2025-01-09-17-23-07_high_34": [
+      {
+        "demo_id": "2025-01-09-17-23-07_high_34",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 5.0,
+        "reference_sec": 3.56,
+        "is_instant": false,
+        "raw_line": "appraoch - 3-5s, 3.56s"
+      },
+      {
+        "demo_id": "2025-01-09-17-23-07_high_34",
+        "label": "active push",
+        "start_sec": 32.0,
+        "end_sec": 36.0,
+        "reference_sec": 34.8,
+        "is_instant": false,
+        "raw_line": "push - 32-36s, 34.8s"
+      }
+    ],
+    "2025-01-09-18-00-33_high_24": [
+      {
+        "demo_id": "2025-01-09-18-00-33_high_24",
+        "label": "approach",
+        "start_sec": 2.0,
+        "end_sec": 4.0,
+        "reference_sec": 3.8,
+        "is_instant": false,
+        "raw_line": "approach - 2-4s, 3.8s"
+      },
+      {
+        "demo_id": "2025-01-09-18-00-33_high_24",
+        "label": "first contact",
+        "start_sec": 7.0,
+        "end_sec": 7.0,
+        "reference_sec": 7.0,
+        "is_instant": true,
+        "raw_line": "first contact - 7s"
+      },
+      {
+        "demo_id": "2025-01-09-18-00-33_high_24",
+        "label": "engaged rotation",
+        "start_sec": 7.0,
+        "end_sec": 19.0,
+        "reference_sec": 13.0,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 7-19s"
+      },
+      {
+        "demo_id": "2025-01-09-18-00-33_high_24",
+        "label": "active pull",
+        "start_sec": 18.0,
+        "end_sec": 21.0,
+        "reference_sec": 20.5,
+        "is_instant": false,
+        "raw_line": "active pull - 18-21s, 20.5s"
+      }
+    ],
+    "2025-01-09-18-21-40_high_10": [
+      {
+        "demo_id": "2025-01-09-18-21-40_high_10",
+        "label": "first contact",
+        "start_sec": 8.0,
+        "end_sec": 8.0,
+        "reference_sec": 8.0,
+        "is_instant": true,
+        "raw_line": "first contact - 8s"
+      },
+      {
+        "demo_id": "2025-01-09-18-21-40_high_10",
+        "label": "active pull",
+        "start_sec": 12.0,
+        "end_sec": 15.0,
+        "reference_sec": 13.4,
+        "is_instant": false,
+        "raw_line": "pull- 12-15s, 13.4s"
+      },
+      {
+        "demo_id": "2025-01-09-18-21-40_high_10",
+        "label": "active pull",
+        "start_sec": 20.0,
+        "end_sec": 24.0,
+        "reference_sec": 22.3,
+        "is_instant": false,
+        "raw_line": "pull - 20-24s, 22.3s"
+      }
+    ],
+    "2025-01-09-18-52-39_high_38": [
+      {
+        "demo_id": "2025-01-09-18-52-39_high_38",
+        "label": "approach",
+        "start_sec": 0.0,
+        "end_sec": 2.0,
+        "reference_sec": 1.8,
+        "is_instant": false,
+        "raw_line": "approach - 0-2s, 1.8s"
+      },
+      {
+        "demo_id": "2025-01-09-18-52-39_high_38",
+        "label": "active push",
+        "start_sec": 6.0,
+        "end_sec": 8.0,
+        "reference_sec": 7.5,
+        "is_instant": false,
+        "raw_line": "active push - 6-8s, 7.5s"
+      },
+      {
+        "demo_id": "2025-01-09-18-52-39_high_38",
+        "label": "gripper open",
+        "start_sec": 8.0,
+        "end_sec": 8.0,
+        "reference_sec": 8.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 8s"
+      }
+    ],
+    "2025-01-09-19-15-33_high_17": [
+      {
+        "demo_id": "2025-01-09-19-15-33_high_17",
+        "label": "approach",
+        "start_sec": 1.0,
+        "end_sec": 4.0,
+        "reference_sec": 1.8,
+        "is_instant": false,
+        "raw_line": "approach - 1-4s, 1.8s"
+      },
+      {
+        "demo_id": "2025-01-09-19-15-33_high_17",
+        "label": "first contact",
+        "start_sec": 24.0,
+        "end_sec": 24.0,
+        "reference_sec": 24.0,
+        "is_instant": true,
+        "raw_line": "first contact - 24s"
+      },
+      {
+        "demo_id": "2025-01-09-19-15-33_high_17",
+        "label": "gripper open",
+        "start_sec": 24.0,
+        "end_sec": 24.0,
+        "reference_sec": 24.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 24s"
+      },
+      {
+        "demo_id": "2025-01-09-19-15-33_high_17",
+        "label": "active push",
+        "start_sec": 34.0,
+        "end_sec": 42.0,
+        "reference_sec": 40.0,
+        "is_instant": false,
+        "raw_line": "active push - 34-42s, 40s"
+      }
+    ],
+    "2025-01-10-15-40-55_high_20": [
+      {
+        "demo_id": "2025-01-10-15-40-55_high_20",
+        "label": "approach",
+        "start_sec": 2.0,
+        "end_sec": 5.0,
+        "reference_sec": 2.3,
+        "is_instant": false,
+        "raw_line": "approach - 2-5s, 2.3s"
+      },
+      {
+        "demo_id": "2025-01-10-15-40-55_high_20",
+        "label": "first contact",
+        "start_sec": 8.0,
+        "end_sec": 8.0,
+        "reference_sec": 8.0,
+        "is_instant": true,
+        "raw_line": "first contact - 8s"
+      },
+      {
+        "demo_id": "2025-01-10-15-40-55_high_20",
+        "label": "gripper open",
+        "start_sec": 10.0,
+        "end_sec": 10.0,
+        "reference_sec": 10.0,
+        "is_instant": true,
+        "raw_line": "release - 10s"
+      },
+      {
+        "demo_id": "2025-01-10-15-40-55_high_20",
+        "label": "gripper open",
+        "start_sec": 10.0,
+        "end_sec": 10.0,
+        "reference_sec": 10.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 10s"
+      }
+    ],
+    "2025-01-10-15-40-55_high_40": [],
+    "2025-01-10-15-49-06_high_3": [
+      {
+        "demo_id": "2025-01-10-15-49-06_high_3",
+        "label": "first contact",
+        "start_sec": 8.0,
+        "end_sec": 8.0,
+        "reference_sec": 8.0,
+        "is_instant": true,
+        "raw_line": "first contact - 8s"
+      },
+      {
+        "demo_id": "2025-01-10-15-49-06_high_3",
+        "label": "gripper open",
+        "start_sec": 10.0,
+        "end_sec": 10.0,
+        "reference_sec": 10.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 10s"
+      }
+    ],
+    "2025-01-10-15-59-54_high_12": [
+      {
+        "demo_id": "2025-01-10-15-59-54_high_12",
+        "label": "approach",
+        "start_sec": 2.0,
+        "end_sec": 5.0,
+        "reference_sec": 2.5,
+        "is_instant": false,
+        "raw_line": "approach - 2-5s, 2.5s"
+      },
+      {
+        "demo_id": "2025-01-10-15-59-54_high_12",
+        "label": "first contact",
+        "start_sec": 10.0,
+        "end_sec": 10.0,
+        "reference_sec": 10.0,
+        "is_instant": true,
+        "raw_line": "first contact - 10s"
+      },
+      {
+        "demo_id": "2025-01-10-15-59-54_high_12",
+        "label": "gripper open",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 12s"
+      }
+    ],
+    "2025-01-10-15-59-54_high_36": [
+      {
+        "demo_id": "2025-01-10-15-59-54_high_36",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 6.0,
+        "reference_sec": 3.8,
+        "is_instant": false,
+        "raw_line": "approach - 3-6s, 3.8s"
+      },
+      {
+        "demo_id": "2025-01-10-15-59-54_high_36",
+        "label": "first contact",
+        "start_sec": 7.0,
+        "end_sec": 7.0,
+        "reference_sec": 7.0,
+        "is_instant": true,
+        "raw_line": "first contact - 7s"
+      },
+      {
+        "demo_id": "2025-01-10-15-59-54_high_36",
+        "label": "gripper open",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "release - 12s"
+      },
+      {
+        "demo_id": "2025-01-10-15-59-54_high_36",
+        "label": "gripper open",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 12s"
+      }
+    ],
+    "2025-01-10-16-19-15_high_12": [
+      {
+        "demo_id": "2025-01-10-16-19-15_high_12",
+        "label": "approach",
+        "start_sec": 2.0,
+        "end_sec": 6.0,
+        "reference_sec": 3.3,
+        "is_instant": false,
+        "raw_line": "approach - 2-6s, 3.3s"
+      },
+      {
+        "demo_id": "2025-01-10-16-19-15_high_12",
+        "label": "first contact",
+        "start_sec": 13.0,
+        "end_sec": 13.0,
+        "reference_sec": 13.0,
+        "is_instant": true,
+        "raw_line": "first contact - 13s"
+      }
+    ],
+    "2025-01-10-16-19-15_high_7": [
+      {
+        "demo_id": "2025-01-10-16-19-15_high_7",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 5.0,
+        "reference_sec": 4.5,
+        "is_instant": false,
+        "raw_line": "approach - 3-5s, 4.5s"
+      },
+      {
+        "demo_id": "2025-01-10-16-19-15_high_7",
+        "label": "first contact",
+        "start_sec": 9.0,
+        "end_sec": 9.0,
+        "reference_sec": 9.0,
+        "is_instant": true,
+        "raw_line": "first contact - 9s"
+      },
+      {
+        "demo_id": "2025-01-10-16-19-15_high_7",
+        "label": "gripper open",
+        "start_sec": 11.0,
+        "end_sec": 11.0,
+        "reference_sec": 11.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 11s"
+      }
+    ],
+    "2025-01-10-16-30-49_high_14": [
+      {
+        "demo_id": "2025-01-10-16-30-49_high_14",
+        "label": "approach",
+        "start_sec": 2.0,
+        "end_sec": 4.0,
+        "reference_sec": 3.1,
+        "is_instant": false,
+        "raw_line": "approach - 2-4s, 3.1s"
+      },
+      {
+        "demo_id": "2025-01-10-16-30-49_high_14",
+        "label": "first contact",
+        "start_sec": 6.0,
+        "end_sec": 6.0,
+        "reference_sec": 6.0,
+        "is_instant": true,
+        "raw_line": "first contact - 6s"
+      },
+      {
+        "demo_id": "2025-01-10-16-30-49_high_14",
+        "label": "active push",
+        "start_sec": 8.0,
+        "end_sec": 12.0,
+        "reference_sec": 10.0,
+        "is_instant": false,
+        "raw_line": "push - 8-12s"
+      }
+    ],
+    "2025-01-10-16-37-45_high_11": [
+      {
+        "demo_id": "2025-01-10-16-37-45_high_11",
+        "label": "approach",
+        "start_sec": 5.0,
+        "end_sec": 8.0,
+        "reference_sec": 8.0,
+        "is_instant": false,
+        "raw_line": "approach - 5-8s, 8s"
+      },
+      {
+        "demo_id": "2025-01-10-16-37-45_high_11",
+        "label": "first contact",
+        "start_sec": 13.0,
+        "end_sec": 13.0,
+        "reference_sec": 13.0,
+        "is_instant": true,
+        "raw_line": "first contact - 13s"
+      },
+      {
+        "demo_id": "2025-01-10-16-37-45_high_11",
+        "label": "gripper close",
+        "start_sec": 13.0,
+        "end_sec": 13.0,
+        "reference_sec": 13.0,
+        "is_instant": true,
+        "raw_line": "gripper close - 13s"
+      }
+    ],
+    "2025-01-10-17-25-29_high_31": [
+      {
+        "demo_id": "2025-01-10-17-25-29_high_31",
+        "label": "first contact",
+        "start_sec": 10.0,
+        "end_sec": 10.0,
+        "reference_sec": 10.0,
+        "is_instant": true,
+        "raw_line": "first contact - 10s"
+      },
+      {
+        "demo_id": "2025-01-10-17-25-29_high_31",
+        "label": "engaged rotation",
+        "start_sec": 11.0,
+        "end_sec": 39.0,
+        "reference_sec": 25.0,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 11-39s"
+      },
+      {
+        "demo_id": "2025-01-10-17-25-29_high_31",
+        "label": "active push",
+        "start_sec": 34.0,
+        "end_sec": 39.0,
+        "reference_sec": 36.5,
+        "is_instant": false,
+        "raw_line": "active push - 34-39s"
+      },
+      {
+        "demo_id": "2025-01-10-17-25-29_high_31",
+        "label": "gripper open",
+        "start_sec": 40.0,
+        "end_sec": 40.0,
+        "reference_sec": 40.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 40s"
+      }
+    ],
+    "2025-01-10-17-36-05_high_19": [
+      {
+        "demo_id": "2025-01-10-17-36-05_high_19",
+        "label": "first contact",
+        "start_sec": 5.0,
+        "end_sec": 5.0,
+        "reference_sec": 5.0,
+        "is_instant": true,
+        "raw_line": "first contact - 5s"
+      },
+      {
+        "demo_id": "2025-01-10-17-36-05_high_19",
+        "label": "gripper close",
+        "start_sec": 5.0,
+        "end_sec": 5.0,
+        "reference_sec": 5.0,
+        "is_instant": true,
+        "raw_line": "gripper close 5s"
+      },
+      {
+        "demo_id": "2025-01-10-17-36-05_high_19",
+        "label": "engaged rotation",
+        "start_sec": 5.0,
+        "end_sec": 20.0,
+        "reference_sec": 12.5,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 5-20s"
+      },
+      {
+        "demo_id": "2025-01-10-17-36-05_high_19",
+        "label": "active pull",
+        "start_sec": 15.0,
+        "end_sec": 20.0,
+        "reference_sec": 17.2,
+        "is_instant": false,
+        "raw_line": "active pull - 15-20s, 17.2s"
+      }
+    ],
+    "2025-01-10-17-54-09_high_34": [
+      {
+        "demo_id": "2025-01-10-17-54-09_high_34",
+        "label": "approach",
+        "start_sec": 7.0,
+        "end_sec": 10.0,
+        "reference_sec": 8.23,
+        "is_instant": false,
+        "raw_line": "approach - 7-10s, 8.23s"
+      },
+      {
+        "demo_id": "2025-01-10-17-54-09_high_34",
+        "label": "first contact",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "first contact - 12s"
+      }
+    ],
+    "2025-01-10-17-54-09_high_5": [
+      {
+        "demo_id": "2025-01-10-17-54-09_high_5",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 6.0,
+        "reference_sec": 4.17,
+        "is_instant": false,
+        "raw_line": "approach - 3-6s, 4.17s"
+      },
+      {
+        "demo_id": "2025-01-10-17-54-09_high_5",
+        "label": "first contact",
+        "start_sec": 10.33,
+        "end_sec": 10.33,
+        "reference_sec": 10.33,
+        "is_instant": true,
+        "raw_line": "first contact - 10.33s"
+      },
+      {
+        "demo_id": "2025-01-10-17-54-09_high_5",
+        "label": "active push",
+        "start_sec": 22.0,
+        "end_sec": 24.0,
+        "reference_sec": 23.7,
+        "is_instant": false,
+        "raw_line": "active push - 22-24s, 23.7s"
+      },
+      {
+        "demo_id": "2025-01-10-17-54-09_high_5",
+        "label": "active push",
+        "start_sec": 35.6,
+        "end_sec": 38.6,
+        "reference_sec": 36.5,
+        "is_instant": false,
+        "raw_line": "active push - 35.6-38.6s, 36.5s"
+      }
+    ],
+    "2025-01-10-17-54-09_high_6": [
+      {
+        "demo_id": "2025-01-10-17-54-09_high_6",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 6.0,
+        "reference_sec": 4.5,
+        "is_instant": false,
+        "raw_line": "approach - 3-6s,"
+      }
+    ],
+    "2025-01-10-18-03-36_high_3": [
+      {
+        "demo_id": "2025-01-10-18-03-36_high_3",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 5.0,
+        "reference_sec": 4.0,
+        "is_instant": false,
+        "raw_line": "approach - 3-5s"
+      },
+      {
+        "demo_id": "2025-01-10-18-03-36_high_3",
+        "label": "first contact",
+        "start_sec": 7.0,
+        "end_sec": 7.0,
+        "reference_sec": 7.0,
+        "is_instant": true,
+        "raw_line": "first contact - 7s"
+      },
+      {
+        "demo_id": "2025-01-10-18-03-36_high_3",
+        "label": "active pull",
+        "start_sec": 12.0,
+        "end_sec": 14.0,
+        "reference_sec": 13.4,
+        "is_instant": false,
+        "raw_line": "active pull - 12-14s, 13.4s"
+      },
+      {
+        "demo_id": "2025-01-10-18-03-36_high_3",
+        "label": "active pull",
+        "start_sec": 17.0,
+        "end_sec": 18.0,
+        "reference_sec": 17.4,
+        "is_instant": false,
+        "raw_line": "active pull - 17-18s, 17.4s"
+      },
+      {
+        "demo_id": "2025-01-10-18-03-36_high_3",
+        "label": "active pull",
+        "start_sec": 19.0,
+        "end_sec": 23.0,
+        "reference_sec": 20.93,
+        "is_instant": false,
+        "raw_line": "active pull - 19-23s, 20.93s"
+      }
+    ],
+    "2025-01-10-18-03-36_high_9": [
+      {
+        "demo_id": "2025-01-10-18-03-36_high_9",
+        "label": "approach",
+        "start_sec": 1.0,
+        "end_sec": 4.0,
+        "reference_sec": 2.8,
+        "is_instant": false,
+        "raw_line": "approach - 1-4s, 2.8s"
+      },
+      {
+        "demo_id": "2025-01-10-18-03-36_high_9",
+        "label": "first contact",
+        "start_sec": 10.0,
+        "end_sec": 10.0,
+        "reference_sec": 10.0,
+        "is_instant": true,
+        "raw_line": "first contact - 10s"
+      },
+      {
+        "demo_id": "2025-01-10-18-03-36_high_9",
+        "label": "engaged rotation",
+        "start_sec": 10.0,
+        "end_sec": 20.0,
+        "reference_sec": 15.0,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 10-20s"
+      }
+    ],
+    "2025-01-10-18-12-06_high_15": [
+      {
+        "demo_id": "2025-01-10-18-12-06_high_15",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 6.0,
+        "reference_sec": 5.9,
+        "is_instant": false,
+        "raw_line": "approach - 3-6s, 5.9s"
+      },
+      {
+        "demo_id": "2025-01-10-18-12-06_high_15",
+        "label": "first contact",
+        "start_sec": 10.4,
+        "end_sec": 10.4,
+        "reference_sec": 10.4,
+        "is_instant": true,
+        "raw_line": "first contact - 10.4s"
+      },
+      {
+        "demo_id": "2025-01-10-18-12-06_high_15",
+        "label": "gripper open",
+        "start_sec": 10.4,
+        "end_sec": 10.4,
+        "reference_sec": 10.4,
+        "is_instant": true,
+        "raw_line": "gripper open 10.4s"
+      },
+      {
+        "demo_id": "2025-01-10-18-12-06_high_15",
+        "label": "active push",
+        "start_sec": 14.0,
+        "end_sec": 15.0,
+        "reference_sec": 14.53,
+        "is_instant": false,
+        "raw_line": "active push - 14-15s, 14.53s"
+      },
+      {
+        "demo_id": "2025-01-10-18-12-06_high_15",
+        "label": "active push",
+        "start_sec": 24.0,
+        "end_sec": 25.0,
+        "reference_sec": 24.8,
+        "is_instant": false,
+        "raw_line": "active push - 24-25s, 24.8s"
+      },
+      {
+        "demo_id": "2025-01-10-18-12-06_high_15",
+        "label": "active push",
+        "start_sec": 36.0,
+        "end_sec": 39.0,
+        "reference_sec": 38.6,
+        "is_instant": false,
+        "raw_line": "active push - 36-39s, 38.6s"
+      }
+    ],
+    "2025-01-10-18-31-44_high_24": [
+      {
+        "demo_id": "2025-01-10-18-31-44_high_24",
+        "label": "approach",
+        "start_sec": 3.27,
+        "end_sec": 6.4,
+        "reference_sec": 4.835,
+        "is_instant": false,
+        "raw_line": "approach - 3.27-6.4s,"
+      },
+      {
+        "demo_id": "2025-01-10-18-31-44_high_24",
+        "label": "first contact",
+        "start_sec": 9.0,
+        "end_sec": 9.0,
+        "reference_sec": 9.0,
+        "is_instant": true,
+        "raw_line": "first contact 9s"
+      },
+      {
+        "demo_id": "2025-01-10-18-31-44_high_24",
+        "label": "gripper close",
+        "start_sec": 9.0,
+        "end_sec": 9.0,
+        "reference_sec": 9.0,
+        "is_instant": true,
+        "raw_line": "gripper close 9s"
+      },
+      {
+        "demo_id": "2025-01-10-18-31-44_high_24",
+        "label": "gripper open",
+        "start_sec": 10.0,
+        "end_sec": 10.0,
+        "reference_sec": 10.0,
+        "is_instant": true,
+        "raw_line": "gripper open 10s"
+      },
+      {
+        "demo_id": "2025-01-10-18-31-44_high_24",
+        "label": "gripper close",
+        "start_sec": 12.5,
+        "end_sec": 12.5,
+        "reference_sec": 12.5,
+        "is_instant": true,
+        "raw_line": "gripper close 12.5s"
+      }
+    ],
+    "2025-01-11-11-12-32_high_32": [
+      {
+        "demo_id": "2025-01-11-11-12-32_high_32",
+        "label": "approach",
+        "start_sec": 4.0,
+        "end_sec": 10.0,
+        "reference_sec": 4.9,
+        "is_instant": false,
+        "raw_line": "approach - 4-10s, 4.9s"
+      },
+      {
+        "demo_id": "2025-01-11-11-12-32_high_32",
+        "label": "first contact",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "first contact 12s"
+      },
+      {
+        "demo_id": "2025-01-11-11-12-32_high_32",
+        "label": "gripper close",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "gripper close 12s"
+      },
+      {
+        "demo_id": "2025-01-11-11-12-32_high_32",
+        "label": "active pull",
+        "start_sec": 12.0,
+        "end_sec": 13.0,
+        "reference_sec": 12.29,
+        "is_instant": false,
+        "raw_line": "active pull - 12-13s, 12.29s"
+      }
+    ],
+    "2025-01-11-11-29-58_high_6": [
+      {
+        "demo_id": "2025-01-11-11-29-58_high_6",
+        "label": "approach",
+        "start_sec": 1.5,
+        "end_sec": 4.5,
+        "reference_sec": 1.8,
+        "is_instant": false,
+        "raw_line": "approach - 1.5-4.5s, 1.8s"
+      },
+      {
+        "demo_id": "2025-01-11-11-29-58_high_6",
+        "label": "first contact",
+        "start_sec": 15.27,
+        "end_sec": 15.27,
+        "reference_sec": 15.27,
+        "is_instant": true,
+        "raw_line": "first contact - 15.27s"
+      },
+      {
+        "demo_id": "2025-01-11-11-29-58_high_6",
+        "label": "active push",
+        "start_sec": 27.0,
+        "end_sec": 30.0,
+        "reference_sec": 29.0,
+        "is_instant": false,
+        "raw_line": "active push - 27-30s, 29s"
+      }
+    ],
+    "2025-01-11-11-35-53_high_1": [
+      {
+        "demo_id": "2025-01-11-11-35-53_high_1",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 8.0,
+        "reference_sec": 6.6,
+        "is_instant": false,
+        "raw_line": "approach - 3-8s, 6.6s"
+      }
+    ],
+    "2025-01-11-12-22-42_high_25": [
+      {
+        "demo_id": "2025-01-11-12-22-42_high_25",
+        "label": "gripper close",
+        "start_sec": 6.0,
+        "end_sec": 6.0,
+        "reference_sec": 6.0,
+        "is_instant": true,
+        "raw_line": "close gripper - 6s"
+      },
+      {
+        "demo_id": "2025-01-11-12-22-42_high_25",
+        "label": "engaged rotation",
+        "start_sec": 6.0,
+        "end_sec": 21.0,
+        "reference_sec": 13.5,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 6-21s"
+      },
+      {
+        "demo_id": "2025-01-11-12-22-42_high_25",
+        "label": "active pull",
+        "start_sec": 16.2,
+        "end_sec": 21.0,
+        "reference_sec": 18.8,
+        "is_instant": false,
+        "raw_line": "active pull - 16.2-21s, 18.8s"
+      }
+    ],
+    "2025-01-11-12-22-42_high_31": [
+      {
+        "demo_id": "2025-01-11-12-22-42_high_31",
+        "label": "approach",
+        "start_sec": 4.0,
+        "end_sec": 8.0,
+        "reference_sec": 5.8,
+        "is_instant": false,
+        "raw_line": "approach - 4-8s, 5.8s"
+      },
+      {
+        "demo_id": "2025-01-11-12-22-42_high_31",
+        "label": "first contact",
+        "start_sec": 12.0,
+        "end_sec": 12.0,
+        "reference_sec": 12.0,
+        "is_instant": true,
+        "raw_line": "first contact - 12s"
+      },
+      {
+        "demo_id": "2025-01-11-12-22-42_high_31",
+        "label": "active pull",
+        "start_sec": 20.0,
+        "end_sec": 30.0,
+        "reference_sec": 27.9,
+        "is_instant": false,
+        "raw_line": "active pull - 20-30s, 27.9s"
+      }
+    ],
+    "2025-01-11-13-42-45_high_3": [
+      {
+        "demo_id": "2025-01-11-13-42-45_high_3",
+        "label": "approach",
+        "start_sec": 2.0,
+        "end_sec": 9.0,
+        "reference_sec": 6.5,
+        "is_instant": false,
+        "raw_line": "approach - 2-9s, 6.5s"
+      },
+      {
+        "demo_id": "2025-01-11-13-42-45_high_3",
+        "label": "gripper close",
+        "start_sec": 12.27,
+        "end_sec": 12.27,
+        "reference_sec": 12.27,
+        "is_instant": true,
+        "raw_line": "close gripper - 12.27s"
+      }
+    ],
+    "2025-01-11-14-09-00_high_20": [
+      {
+        "demo_id": "2025-01-11-14-09-00_high_20",
+        "label": "approach",
+        "start_sec": 1.0,
+        "end_sec": 5.0,
+        "reference_sec": 1.5,
+        "is_instant": false,
+        "raw_line": "approach - 1-5s, 1.5s"
+      },
+      {
+        "demo_id": "2025-01-11-14-09-00_high_20",
+        "label": "gripper open",
+        "start_sec": 9.47,
+        "end_sec": 9.47,
+        "reference_sec": 9.47,
+        "is_instant": true,
+        "raw_line": "release -  9.47s"
+      }
+    ],
+    "2025-01-11-14-54-27_high_5": [
+      {
+        "demo_id": "2025-01-11-14-54-27_high_5",
+        "label": "approach",
+        "start_sec": 3.0,
+        "end_sec": 6.0,
+        "reference_sec": 3.03,
+        "is_instant": false,
+        "raw_line": "approach - 3-6s, 3.03s"
+      },
+      {
+        "demo_id": "2025-01-11-14-54-27_high_5",
+        "label": "gripper close",
+        "start_sec": 9.67,
+        "end_sec": 9.67,
+        "reference_sec": 9.67,
+        "is_instant": true,
+        "raw_line": "close gripper - 9.67s"
+      },
+      {
+        "demo_id": "2025-01-11-14-54-27_high_5",
+        "label": "active pull",
+        "start_sec": 24.0,
+        "end_sec": 29.0,
+        "reference_sec": 27.0,
+        "is_instant": false,
+        "raw_line": "active pull - 24-29s, 27s"
+      }
+    ],
+    "2025-01-11-15-10-57_high_31": [
+      {
+        "demo_id": "2025-01-11-15-10-57_high_31",
+        "label": "approach",
+        "start_sec": 1.0,
+        "end_sec": 5.0,
+        "reference_sec": 1.78,
+        "is_instant": false,
+        "raw_line": "approach - 1-5s, 1.78s"
+      },
+      {
+        "demo_id": "2025-01-11-15-10-57_high_31",
+        "label": "gripper close",
+        "start_sec": 9.0,
+        "end_sec": 9.0,
+        "reference_sec": 9.0,
+        "is_instant": true,
+        "raw_line": "close gripper - 9s"
+      },
+      {
+        "demo_id": "2025-01-11-15-10-57_high_31",
+        "label": "engaged rotation",
+        "start_sec": 10.0,
+        "end_sec": 20.0,
+        "reference_sec": 15.0,
+        "is_instant": false,
+        "raw_line": "engaged rotation - 10-20s"
+      },
+      {
+        "demo_id": "2025-01-11-15-10-57_high_31",
+        "label": "active pull",
+        "start_sec": 29.0,
+        "end_sec": 31.0,
+        "reference_sec": 29.3,
+        "is_instant": false,
+        "raw_line": "active pull - 29-31s, 29.3s"
+      }
+    ],
+    "2025-01-13-09-43-29_high_22": [
+      {
+        "demo_id": "2025-01-13-09-43-29_high_22",
+        "label": "approach",
+        "start_sec": 2.0,
+        "end_sec": 4.0,
+        "reference_sec": 3.0,
+        "is_instant": false,
+        "raw_line": "approach - 2-4s,"
+      },
+      {
+        "demo_id": "2025-01-13-09-43-29_high_22",
+        "label": "first contact",
+        "start_sec": 6.0,
+        "end_sec": 6.0,
+        "reference_sec": 6.0,
+        "is_instant": true,
+        "raw_line": "first contact - 6s"
+      },
+      {
+        "demo_id": "2025-01-13-09-43-29_high_22",
+        "label": "active push",
+        "start_sec": 38.0,
+        "end_sec": 41.0,
+        "reference_sec": 39.4,
+        "is_instant": false,
+        "raw_line": "active push - 38-41s, 39.4s"
+      },
+      {
+        "demo_id": "2025-01-13-09-43-29_high_22",
+        "label": "active push",
+        "start_sec": 44.0,
+        "end_sec": 46.0,
+        "reference_sec": 45.7,
+        "is_instant": false,
+        "raw_line": "active push - 44-46s, 45.7s"
+      }
+    ],
+    "2025-01-13-11-23-17_high_5": [
+      {
+        "demo_id": "2025-01-13-11-23-17_high_5",
+        "label": "approach",
+        "start_sec": 1.0,
+        "end_sec": 8.0,
+        "reference_sec": 4.7,
+        "is_instant": false,
+        "raw_line": "approach - 1-8s, 4.7s"
+      },
+      {
+        "demo_id": "2025-01-13-11-23-17_high_5",
+        "label": "gripper open",
+        "start_sec": 34.0,
+        "end_sec": 34.0,
+        "reference_sec": 34.0,
+        "is_instant": true,
+        "raw_line": "gripper open - 34s"
+      },
+      {
+        "demo_id": "2025-01-13-11-23-17_high_5",
+        "label": "active push",
+        "start_sec": 36.0,
+        "end_sec": 43.0,
+        "reference_sec": 42.2,
+        "is_instant": false,
+        "raw_line": "active push - 36-43s, 42.2s"
+      }
+    ],
+    "2025-01-13-11-23-17_high_7": [],
+    "2025-01-13-11-37-50_high_35": [],
+    "2025-01-13-11-44-13_high_26": [],
+    "2025-01-13-19-19-46_high_16": [],
+    "2025-01-13-19-19-46_high_6": [],
+    "2025-01-14-10-57-14_high_31": [],
+    "2025-01-14-11-06-43_high_17": [],
+    "2025-01-14-11-19-51_high_24": [],
+    "2025-01-14-11-45-36_high_7": [],
+    "2025-01-14-11-53-50_high_49": []
+  }
+}

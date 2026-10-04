@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from pathologist.metrics.base import MetricComputationContext, metric_config
-from pathologist.metrics.helpers import summarize
+from pathologist.metrics.helpers import extract_vector_series, summarize
 from pathologist.metrics.robot_masking import (
     DEFAULT_DINO_MODEL,
     DEFAULT_SAM2_MODEL,
@@ -25,11 +25,50 @@ from pathologist.schemas.metrics import MetricResult, MetricSample
 from pathologist.schemas.trajectory_bundle import CameraFrameRef
 
 
-COMPONENT_NAMES = (
+LEGACY_COMPONENT_NAMES = (
     "object_residual_speed",
     "gripper_object_relative_speed",
     "gripper_object_separation_speed",
 )
+COMPONENT_NAMES = (
+    *LEGACY_COMPONENT_NAMES,
+    "unexplained_object_motion",
+    "unexplained_object_motion_grasped",
+    "object_visibility_drop",
+    "object_visibility_drop_grasped",
+)
+COMPONENT_DESCRIPTIONS = {
+    "object_residual_speed": (
+        "Camera-compensated manipulated-object residual speed."
+    ),
+    "gripper_object_relative_speed": (
+        "Camera-compensated relative speed between gripper and object."
+    ),
+    "gripper_object_separation_speed": (
+        "Positive gripper-object separation speed along their connecting axis."
+    ),
+    "unexplained_object_motion": (
+        "Object motion not explained by camera-compensated gripper motion."
+    ),
+    "unexplained_object_motion_grasped": (
+        "Unexplained object motion gated to settled closed-gripper intervals."
+    ),
+    "object_visibility_drop": (
+        "Positive loss of tracked-object visibility relative to a fixed time lag."
+    ),
+    "object_visibility_drop_grasped": (
+        "Tracked-object visibility loss gated to settled closed-gripper intervals."
+    ),
+}
+COMPONENT_UNITS = {
+    "object_residual_speed": "image_diagonals_per_second",
+    "gripper_object_relative_speed": "image_diagonals_per_second",
+    "gripper_object_separation_speed": "image_diagonals_per_second",
+    "unexplained_object_motion": "image_diagonals_per_second",
+    "unexplained_object_motion_grasped": "image_diagonals_per_second",
+    "object_visibility_drop": "visible_fraction_drop",
+    "object_visibility_drop_grasped": "visible_fraction_drop",
+}
 _COTRACKER_CACHE: dict[tuple[str, str, str], Any] = {}
 DEFAULT_COTRACKER_REPO = (
     "facebookresearch/co-tracker:82e02e8029753ad4ef13cf06be7f4fc5facdda4d"
@@ -56,6 +95,8 @@ class InteractionMotionRecord:
     visible_object_point_count: int
     visible_gripper_point_count: int
     visible_background_point_count: int
+    object_track_valid: bool = True
+    object_visibility_fraction: float = 1.0
 
 
 class GroundedSAM2InteractionSegmenter:
@@ -299,6 +340,20 @@ class ObjectInteractionMotionMetric:
         config = metric_config(context, self.name)
         enabled = bool(config.get("enabled", False))
         camera_names = _configured_camera_names(config)
+        interaction_config = (
+            config.get("interaction")
+            if isinstance(config.get("interaction"), dict)
+            else {}
+        )
+        gating_config = (
+            interaction_config.get("gating")
+            if isinstance(interaction_config.get("gating"), dict)
+            else (
+                config.get("gating")
+                if isinstance(config.get("gating"), dict)
+                else {}
+            )
+        )
         sample_period_sec = float(config.get("sample_period_sec", 0.5))
         chunk_size_frames = max(3, int(config.get("chunk_size_frames", 32)))
         tracker_resize = _configured_resize(config.get("tracker_resize", [384, 384]))
@@ -337,6 +392,18 @@ class ObjectInteractionMotionMetric:
                     max(0.25, 2.0 * sample_period_sec),
                 )
             ),
+        )
+        min_visible_object_points = max(
+            1,
+            int(config.get("min_visible_object_points", 8)),
+        )
+        min_visible_gripper_points = max(
+            1,
+            int(config.get("min_visible_gripper_points", 8)),
+        )
+        visibility_lag_sec = max(
+            0.0,
+            float(config.get("visibility_lag_sec", 0.5)),
         )
 
         if not enabled:
@@ -398,6 +465,9 @@ class ObjectInteractionMotionMetric:
                     min_homography_inlier_fraction=(
                         min_homography_inlier_fraction
                     ),
+                    min_visible_object_points=min_visible_object_points,
+                    min_visible_gripper_points=min_visible_gripper_points,
+                    visibility_lag_sec=visibility_lag_sec,
                     foreground_erosion_px=foreground_erosion_px,
                     background_exclusion_dilation_px=(
                         background_exclusion_dilation_px
@@ -438,7 +508,67 @@ class ObjectInteractionMotionMetric:
                 reason="camera component alignment produced no samples",
             )
 
-        values = [float(sample.value) for sample in samples]
+        gating_mask, gating_metadata = _interaction_grasp_mask(
+            context,
+            [float(sample.timestamp_sec) for sample in samples],
+            gating_config,
+        )
+        ungated_pairs = (
+            (
+                "unexplained_object_motion",
+                "unexplained_object_motion_grasped",
+            ),
+            (
+                "object_visibility_drop",
+                "object_visibility_drop_grasped",
+            ),
+        )
+        for ungated_name, gated_name in ungated_pairs:
+            source_values = component_series[ungated_name]
+            component_series[gated_name] = [
+                float(value) * float(gate)
+                for value, gate in zip(source_values, gating_mask)
+            ]
+        per_camera_series = camera_aggregation_metadata.get(
+            "per_camera_series",
+            {},
+        )
+        if isinstance(per_camera_series, dict):
+            for camera_series in per_camera_series.values():
+                if not isinstance(camera_series, dict):
+                    continue
+                camera_timestamps = camera_series.get("timestamps_sec", [])
+                camera_components = camera_series.get("components", {})
+                if (
+                    not isinstance(camera_timestamps, list)
+                    or not isinstance(camera_components, dict)
+                ):
+                    continue
+                camera_mask, _ = _interaction_grasp_mask(
+                    context,
+                    [float(value) for value in camera_timestamps],
+                    gating_config,
+                )
+                for ungated_name, gated_name in ungated_pairs:
+                    values_for_camera = camera_components.get(
+                        ungated_name,
+                        [],
+                    )
+                    if isinstance(values_for_camera, list):
+                        camera_components[gated_name] = [
+                            float(value) * float(gate)
+                            for value, gate in zip(
+                                values_for_camera,
+                                camera_mask,
+                            )
+                        ]
+        values = [
+            max(component_series[name][index] for name in COMPONENT_NAMES)
+            for index in range(len(samples))
+        ]
+        for sample, value in zip(samples, values):
+            sample.value = value
+
         diagnostics = [
             record
             for records in records_by_camera.values()
@@ -477,6 +607,9 @@ class ObjectInteractionMotionMetric:
                     background_exclusion_dilation_px
                 ),
                 "max_camera_alignment_gap_sec": max_camera_alignment_gap_sec,
+                "min_visible_object_points": min_visible_object_points,
+                "min_visible_gripper_points": min_visible_gripper_points,
+                "visibility_lag_sec": visibility_lag_sec,
                 "cotracker_device": tracker.device,
                 "ecod_component_values": component_series,
                 "sample_camera_names": sample_camera_names,
@@ -490,6 +623,20 @@ class ObjectInteractionMotionMetric:
                 "camera_reference_timeline": camera_aggregation_metadata.get(
                     "camera_reference_timeline"
                 ),
+                "per_camera_series": camera_aggregation_metadata.get(
+                    "per_camera_series",
+                    {},
+                ),
+                "object_track_valid": camera_aggregation_metadata.get(
+                    "object_track_valid",
+                    [],
+                ),
+                "gating_available": gating_metadata["gating_available"],
+                "gating_config": gating_metadata["gating_config"],
+                "gating_stream_name": gating_metadata.get("gating_stream_name"),
+                "gated_in_fraction": gating_metadata["gated_in_fraction"],
+                "grasp_closed_mask": [bool(value) for value in gating_mask],
+                "gating_warning": gating_metadata.get("warning"),
                 "segmentation_metadata": segmentation_metadata,
                 "camera_errors": camera_errors,
                 "image_read_failures": image_read_failures,
@@ -510,6 +657,97 @@ class ObjectInteractionMotionMetric:
         )
 
 
+def object_interaction_component_metrics(
+    grouped_metric: MetricResult,
+) -> list[MetricResult]:
+    """Expose interaction components as independently scoreable scalar metrics."""
+
+    component_values = grouped_metric.metadata.get("ecod_component_values")
+    available = (
+        grouped_metric.metadata.get("available") is True
+        and isinstance(component_values, dict)
+    )
+    output: list[MetricResult] = []
+    for component_name in COMPONENT_NAMES:
+        values = (
+            component_values.get(component_name)
+            if isinstance(component_values, dict)
+            else None
+        )
+        aligned_values = (
+            [float(value) for value in values]
+            if isinstance(values, (list, tuple))
+            and len(values) == len(grouped_metric.samples)
+            else []
+        )
+        samples = [
+            MetricSample(
+                timestamp_sec=source.timestamp_sec,
+                value=value,
+                window=source.window,
+            )
+            for source, value in zip(grouped_metric.samples, aligned_values)
+        ]
+        component_available = available and bool(samples)
+        metadata = {
+            "available": component_available,
+            "parent_metric_name": grouped_metric.name,
+            "component_name": component_name,
+            "surprise_tail_interpretation": "right",
+            "object_track_valid": grouped_metric.metadata.get(
+                "object_track_valid",
+                [],
+            ),
+        }
+        if component_available:
+            metadata.update(
+                {
+                    "sample_camera_names": grouped_metric.metadata.get(
+                        "sample_camera_names",
+                        [],
+                    ),
+                    "model_training": grouped_metric.metadata.get(
+                        "model_training"
+                    ),
+                    "gating_available": grouped_metric.metadata.get(
+                        "gating_available"
+                    ),
+                    "gating_config": grouped_metric.metadata.get(
+                        "gating_config"
+                    ),
+                    "gated_in_fraction": grouped_metric.metadata.get(
+                        "gated_in_fraction"
+                    ),
+                }
+            )
+        else:
+            metadata["unavailable_reason"] = grouped_metric.metadata.get(
+                "unavailable_reason",
+                "parent object-interaction component is unavailable",
+            )
+        output.append(
+            MetricResult(
+                name=component_name,
+                description=COMPONENT_DESCRIPTIONS[component_name],
+                source_modalities=(
+                    [Modality.RGB, Modality.GRIPPER]
+                    if component_name.endswith("_grasped")
+                    else [Modality.RGB]
+                ),
+                unit=COMPONENT_UNITS[component_name],
+                samples=samples,
+                summary=summarize(
+                    [float(sample.value) for sample in samples]
+                ),
+                thresholds=[],
+                events=[],
+                display_hint=f"{component_name}_timeseries",
+                metadata=metadata,
+            )
+        )
+    return output
+
+
 def _aggregate_camera_records(
     records_by_camera: dict[str, list[InteractionMotionRecord]],
     *,
@@ -528,6 +766,8 @@ def _aggregate_camera_records(
             "camera_aggregation": "scalar_max_same_camera_components",
             "camera_reference_timeline": None,
             "camera_sample_counts": {},
+            "per_camera_series": {},
+            "object_track_valid": [],
         }
     ordered_records = {
         camera_name: sorted(
@@ -542,6 +782,7 @@ def _aggregate_camera_records(
     )
     samples: list[MetricSample] = []
     winning_cameras: list[str] = []
+    winning_track_validity: list[bool] = []
     for reference_record in ordered_records[reference_camera]:
         timestamp = float(reference_record.timestamp_sec)
         candidates: list[tuple[float, str, dict[str, float]]] = []
@@ -577,6 +818,13 @@ def _aggregate_camera_records(
             )
         )
         winning_cameras.append(winning_camera)
+        winning_track_validity.append(
+            _interpolated_record_track_validity(
+                ordered_records[winning_camera],
+                timestamp,
+                max_alignment_gap_sec=max_alignment_gap_sec,
+            )
+        )
         for component_name in COMPONENT_NAMES:
             component_series[component_name].append(
                 float(winning_components[component_name])
@@ -586,6 +834,28 @@ def _aggregate_camera_records(
         "camera_reference_timeline": reference_camera,
         "camera_sample_counts": {
             camera_name: len(records) for camera_name, records in ordered_records.items()
+        },
+        "object_track_valid": winning_track_validity,
+        "per_camera_series": {
+            camera_name: {
+                "timestamps_sec": [
+                    float(record.timestamp_sec) for record in records
+                ],
+                "components": {
+                    name: [
+                        _record_component(record, name) for record in records
+                    ]
+                    for name in COMPONENT_NAMES
+                },
+                "object_track_valid": [
+                    bool(record.object_track_valid) for record in records
+                ],
+                "object_visibility_fraction": [
+                    float(record.object_visibility_fraction)
+                    for record in records
+                ],
+            }
+            for camera_name, records in ordered_records.items()
         },
     }
 
@@ -602,7 +872,8 @@ def _interpolated_record_components(
     right = bisect_left(timestamps, timestamp_sec)
     if right < len(records) and timestamps[right] == timestamp_sec:
         return {
-            name: float(records[right].components[name]) for name in COMPONENT_NAMES
+            name: _record_component(records[right], name)
+            for name in COMPONENT_NAMES
         }
     if right == 0 or right >= len(records):
         return None
@@ -620,15 +891,50 @@ def _interpolated_record_components(
     weight = left_gap / span
     return {
         name: (
-            float(records[left].components[name])
+            _record_component(records[left], name)
             + weight
             * (
-                float(records[right].components[name])
-                - float(records[left].components[name])
+                _record_component(records[right], name)
+                - _record_component(records[left], name)
             )
         )
         for name in COMPONENT_NAMES
     }
+
+
+def _record_component(record: InteractionMotionRecord, name: str) -> float:
+    if name in record.components:
+        return float(record.components[name])
+    ungated_name = name.removesuffix("_grasped")
+    return float(record.components.get(ungated_name, 0.0))
+
+
+def _interpolated_record_track_validity(
+    records: list[InteractionMotionRecord],
+    timestamp_sec: float,
+    *,
+    max_alignment_gap_sec: float,
+) -> bool:
+    """Return conservative validity for an exact or interpolated camera sample."""
+
+    if not records:
+        return False
+    timestamps = [float(record.timestamp_sec) for record in records]
+    right = bisect_left(timestamps, timestamp_sec)
+    if right < len(records) and timestamps[right] == timestamp_sec:
+        return bool(records[right].object_track_valid)
+    if right == 0 or right >= len(records):
+        return False
+    left = right - 1
+    if (
+        timestamp_sec - timestamps[left] > max_alignment_gap_sec
+        or timestamps[right] - timestamp_sec > max_alignment_gap_sec
+    ):
+        return False
+    return bool(
+        records[left].object_track_valid
+        and records[right].object_track_valid
+    )
 
 
 def camera_compensated_motion_records(
@@ -644,6 +950,9 @@ def camera_compensated_motion_records(
     ransac_threshold_px: float,
     min_background_inliers: int = 8,
     min_homography_inlier_fraction: float = 0.5,
+    min_visible_object_points: int = 8,
+    min_visible_gripper_points: int = 8,
+    visibility_lag_sec: float = 0.5,
     object_masks: list[Any] | None = None,
     gripper_masks: list[Any] | None = None,
 ) -> list[InteractionMotionRecord]:
@@ -665,6 +974,22 @@ def camera_compensated_motion_records(
         raise ValueError("timestamps_sec must align with track time dimension")
 
     diagonal = max(1.0, math.hypot(frame_width, frame_height))
+    object_visibility_fraction = (
+        visible[:, object_indices].mean(axis=1)
+        if len(object_indices)
+        else np.zeros(tracks.shape[0], dtype=float)
+    )
+    timestamp_values = np.asarray(timestamps_sec, dtype=float)
+    lag_indices = np.searchsorted(
+        timestamp_values,
+        timestamp_values - visibility_lag_sec,
+        side="left",
+    )
+    lag_indices = np.clip(lag_indices, 0, len(timestamp_values) - 1)
+    visibility_drops = np.maximum(
+        0.0,
+        object_visibility_fraction[lag_indices] - object_visibility_fraction,
+    )
     records: list[InteractionMotionRecord] = []
     for time_index in range(1, tracks.shape[0]):
         dt = float(timestamps_sec[time_index] - timestamps_sec[time_index - 1])
@@ -686,11 +1011,7 @@ def camera_compensated_motion_records(
                 gripper_valid,
                 gripper_masks[time_index],
             )
-        if (
-            len(object_valid) < 2
-            or len(gripper_valid) < 2
-            or len(background_valid) < min_background_inliers
-        ):
+        if len(background_valid) < min_background_inliers:
             continue
 
         homography, inlier_fraction = _background_homography(
@@ -704,55 +1025,139 @@ def camera_compensated_motion_records(
         )
         if homography is None:
             continue
-        previous_object = _warp_points(
-            tracks[time_index - 1, object_valid],
-            homography,
+        object_residual_speed = 0.0
+        relative_speed = 0.0
+        separation_speed = 0.0
+        unexplained_object_motion = 0.0
+        object_track_valid = bool(
+            visible[time_index - 1, object_indices].sum()
+            >= min_visible_object_points
+            and visible[time_index, object_indices].sum()
+            >= min_visible_object_points
+            and visible[time_index - 1, gripper_indices].sum()
+            >= min_visible_gripper_points
+            and visible[time_index, gripper_indices].sum()
+            >= min_visible_gripper_points
+            and len(object_valid) >= min_visible_object_points
+            and len(gripper_valid) >= min_visible_gripper_points
         )
-        previous_gripper = _warp_points(
-            tracks[time_index - 1, gripper_valid],
-            homography,
-        )
-        current_object = tracks[time_index, object_valid]
-        current_gripper = tracks[time_index, gripper_valid]
-        object_residuals = current_object - previous_object
-        gripper_residuals = current_gripper - previous_gripper
-        object_velocity = np.median(object_residuals, axis=0) / dt
-        gripper_velocity = np.median(gripper_residuals, axis=0) / dt
-        object_residual_speed = float(
-            np.median(np.linalg.norm(object_residuals, axis=1))
-            / dt
-            / diagonal
-        )
-        stabilized_axis = (
-            np.median(previous_object, axis=0)
-            - np.median(previous_gripper, axis=0)
-        )
-        axis_norm = float(np.linalg.norm(stabilized_axis))
-        relative_velocity = object_velocity - gripper_velocity
-        separation_speed = (
-            max(0.0, float(np.dot(relative_velocity, stabilized_axis / axis_norm)))
-            / diagonal
-            if axis_norm > 1e-8
-            else 0.0
-        )
+        if len(object_valid) >= 2:
+            previous_object = _warp_points(
+                tracks[time_index - 1, object_valid],
+                homography,
+            )
+            current_object = tracks[time_index, object_valid]
+            object_residuals = current_object - previous_object
+            object_velocity = np.median(object_residuals, axis=0) / dt
+            object_residual_speed = float(
+                np.median(np.linalg.norm(object_residuals, axis=1))
+                / dt
+                / diagonal
+            )
+        else:
+            previous_object = np.empty((0, 2), dtype=float)
+            object_velocity = np.zeros(2, dtype=float)
+        if len(gripper_valid) >= 2:
+            previous_gripper = _warp_points(
+                tracks[time_index - 1, gripper_valid],
+                homography,
+            )
+            current_gripper = tracks[time_index, gripper_valid]
+            gripper_residuals = current_gripper - previous_gripper
+            gripper_velocity = np.median(gripper_residuals, axis=0) / dt
+        else:
+            previous_gripper = np.empty((0, 2), dtype=float)
+            gripper_velocity = np.zeros(2, dtype=float)
+        if len(object_valid) >= 2 and len(gripper_valid) >= 2:
+            stabilized_axis = (
+                np.median(previous_object, axis=0)
+                - np.median(previous_gripper, axis=0)
+            )
+            axis_norm = float(np.linalg.norm(stabilized_axis))
+            relative_velocity = object_velocity - gripper_velocity
+            relative_speed = float(
+                np.linalg.norm(relative_velocity) / diagonal
+            )
+            separation_speed = (
+                max(
+                    0.0,
+                    float(
+                        np.dot(
+                            relative_velocity,
+                            stabilized_axis / axis_norm,
+                        )
+                    ),
+                )
+                / diagonal
+                if axis_norm > 1e-8
+                else 0.0
+            )
+            if object_track_valid:
+                unexplained_object_motion = (
+                    unexplained_object_motion_from_velocities(
+                        object_velocity,
+                        gripper_velocity,
+                        diagonal=diagonal,
+                    )
+                )
         records.append(
             InteractionMotionRecord(
                 timestamp_sec=float(timestamps_sec[time_index]),
                 start_sec=float(timestamps_sec[time_index - 1]),
                 components={
                     "object_residual_speed": object_residual_speed,
-                    "gripper_object_relative_speed": float(
-                        np.linalg.norm(relative_velocity) / diagonal
-                    ),
+                    "gripper_object_relative_speed": relative_speed,
                     "gripper_object_separation_speed": separation_speed,
+                    "unexplained_object_motion": unexplained_object_motion,
+                    "unexplained_object_motion_grasped": (
+                        unexplained_object_motion
+                    ),
+                    "object_visibility_drop": float(
+                        visibility_drops[time_index]
+                    ),
+                    "object_visibility_drop_grasped": float(
+                        visibility_drops[time_index]
+                    ),
                 },
                 homography_inlier_fraction=inlier_fraction,
                 visible_object_point_count=len(object_valid),
                 visible_gripper_point_count=len(gripper_valid),
                 visible_background_point_count=len(background_valid),
+                object_track_valid=object_track_valid,
+                object_visibility_fraction=float(
+                    object_visibility_fraction[time_index]
+                ),
             )
         )
     return records
+
+
+def unexplained_object_motion_from_velocities(
+    object_velocity: Any,
+    gripper_velocity: Any,
+    *,
+    diagonal: float = 1.0,
+) -> float:
+    """Return motion requiring both object movement and gripper disagreement."""
+
+    import numpy as np
+
+    if not math.isfinite(diagonal) or diagonal <= 0.0:
+        raise ValueError("diagonal must be positive and finite")
+    object_values = np.asarray(object_velocity, dtype=float)
+    gripper_values = np.asarray(gripper_velocity, dtype=float)
+    if (
+        object_values.shape != gripper_values.shape
+        or object_values.ndim != 1
+        or not np.isfinite(object_values).all()
+        or not np.isfinite(gripper_values).all()
+    ):
+        return 0.0
+    object_speed = float(np.linalg.norm(object_values)) / diagonal
+    relative_speed = (
+        float(np.linalg.norm(object_values - gripper_values)) / diagonal
+    )
+    return min(object_speed, relative_speed)
 
 
 def _compute_camera_records(
@@ -768,6 +1173,9 @@ def _compute_camera_records(
     ransac_threshold_px: float,
     min_background_inliers: int,
     min_homography_inlier_fraction: float,
+    min_visible_object_points: int,
+    min_visible_gripper_points: int,
+    visibility_lag_sec: float,
     foreground_erosion_px: int,
     background_exclusion_dilation_px: int,
     image_read_failures: list[str],
@@ -872,6 +1280,9 @@ def _compute_camera_records(
                 min_homography_inlier_fraction=(
                     min_homography_inlier_fraction
                 ),
+                min_visible_object_points=min_visible_object_points,
+                min_visible_gripper_points=min_visible_gripper_points,
+                visibility_lag_sec=visibility_lag_sec,
                 object_masks=object_masks,
                 gripper_masks=gripper_masks,
             )
@@ -1105,6 +1516,175 @@ def _box_gap(first: list[float], second: list[float]) -> float:
     return math.hypot(dx, dy)
 
 
+def grasp_closed_mask(
+    ts: Any,
+    gripper_ts: Any,
+    gripper_values: Any,
+    *,
+    closed_is_low: bool = True,
+    enter: float = 0.4,
+    exit: float = 0.6,
+    settle_s: float = 0.2,
+) -> Any | None:
+    """Return a settled hysteretic closed-gripper mask on target timestamps."""
+
+    import numpy as np
+
+    target_ts = np.asarray(ts, dtype=float)
+    source_ts = np.asarray(gripper_ts, dtype=float)
+    values = np.asarray(gripper_values, dtype=float)
+    if source_ts.ndim != 1 or values.ndim != 1 or len(source_ts) != len(values):
+        raise ValueError("gripper timestamps and values must be aligned 1-D arrays")
+    if len(source_ts) < 2:
+        return None
+    if not 0.0 <= enter < exit <= 1.0:
+        raise ValueError("gripper hysteresis must satisfy 0 <= enter < exit <= 1")
+    if settle_s < 0.0:
+        raise ValueError("gripper settle_s cannot be negative")
+
+    finite = np.isfinite(source_ts) & np.isfinite(values)
+    source_ts = source_ts[finite]
+    values = values[finite]
+    if len(source_ts) < 2:
+        return None
+    order = np.argsort(source_ts, kind="stable")
+    source_ts = source_ts[order]
+    values = values[order]
+    low = float(np.min(values))
+    high = float(np.max(values))
+    span = high - low
+    if not math.isfinite(span) or span < 1e-6:
+        return None
+
+    normalized = (values - low) / span
+    if not closed_is_low:
+        normalized = 1.0 - normalized
+    closed = np.zeros(len(normalized), dtype=bool)
+    state = False
+    for index, value in enumerate(normalized):
+        if not state and value < enter:
+            state = True
+        elif state and value > exit:
+            state = False
+        closed[index] = state
+
+    index = 0
+    while index < len(closed):
+        if not closed[index]:
+            index += 1
+            continue
+        end = index
+        while end < len(closed) and closed[end]:
+            end += 1
+        closed[index:end] &= (
+            source_ts[index:end] >= source_ts[index] + settle_s
+        )
+        index = end
+
+    if len(target_ts) == 0:
+        return np.zeros(0, dtype=bool)
+    right = np.searchsorted(source_ts, target_ts)
+    right = np.clip(right, 1, len(source_ts) - 1)
+    nearest = np.where(
+        np.abs(source_ts[right - 1] - target_ts)
+        <= np.abs(source_ts[right] - target_ts),
+        right - 1,
+        right,
+    )
+    return closed[nearest]
+
+
+def _interaction_grasp_mask(
+    context: MetricComputationContext,
+    timestamps_sec: list[float],
+    config: dict[str, Any],
+) -> tuple[list[bool], dict[str, Any]]:
+    gripper_signal = str(config.get("gripper_signal", "auto")).strip().lower()
+    closed_is_low = bool(config.get("closed_is_low", True))
+    enter = float(config.get("enter", 0.4))
+    exit = float(config.get("exit", 0.6))
+    settle_s = float(config.get("settle_s", 0.2))
+    gating_config = {
+        "gripper_signal": gripper_signal,
+        "closed_is_low": closed_is_low,
+        "enter": enter,
+        "exit": exit,
+        "settle_s": settle_s,
+    }
+    stream, source_timestamps, source_values = _gripper_signal_series(
+        context,
+        gripper_signal,
+    )
+    mask = grasp_closed_mask(
+        timestamps_sec,
+        source_timestamps,
+        source_values,
+        closed_is_low=closed_is_low,
+        enter=enter,
+        exit=exit,
+        settle_s=settle_s,
+    )
+    if mask is None:
+        fallback = [True] * len(timestamps_sec)
+        return fallback, {
+            "gating_available": False,
+            "gating_config": gating_config,
+            "gating_stream_name": stream.name if stream is not None else None,
+            "gated_in_fraction": 1.0 if fallback else 0.0,
+            "warning": (
+                "gripper gating unavailable; gated metrics equal ungated metrics"
+            ),
+        }
+    output = [bool(value) for value in mask]
+    return output, {
+        "gating_available": True,
+        "gating_config": gating_config,
+        "gating_stream_name": stream.name if stream is not None else None,
+        "gated_in_fraction": (
+            sum(output) / len(output) if output else 0.0
+        ),
+    }
+
+
+def _gripper_signal_series(
+    context: MetricComputationContext,
+    gripper_signal: str,
+) -> tuple[Any | None, list[float], list[float]]:
+    aliases = {
+        "auto": ("gripper_action", "gripper"),
+        "commanded": ("gripper_action",),
+        "action": ("gripper_action",),
+        "gripper_action": ("gripper_action",),
+        "measured": ("gripper",),
+        "aperture": ("gripper",),
+        "gripper": ("gripper",),
+    }
+    preferred_names = aliases.get(gripper_signal, (gripper_signal,))
+    stream = next(
+        (
+            candidate
+            for name in preferred_names
+            for candidate in context.bundle.streams
+            if candidate.name == name and candidate.modality == Modality.GRIPPER
+        ),
+        None,
+    )
+    if stream is None:
+        return None, [], []
+    keys = (
+        ("gripper_action",)
+        if stream.name == "gripper_action"
+        else ("gripper", "gripper_state", "gripper_aperture")
+    )
+    timestamps, vectors = extract_vector_series(stream, keys)
+    values = [
+        sum(float(value) for value in vector) / len(vector)
+        for vector in vectors
+        if vector
+    ]
+    return stream, timestamps[:len(values)], values
+
+
 def _sample_frames_by_period(
     frames: list[CameraFrameRef],
     period_sec: float,
@@ -1123,7 +1703,13 @@ def _sample_frames_by_period(
 
 
 def _configured_camera_names(config: dict[str, object]) -> list[str]:
-    raw_names = config.get("camera_names", ["head"])
+    interaction_config = config.get("interaction")
+    raw_names = (
+        interaction_config.get("cameras")
+        if isinstance(interaction_config, dict)
+        and interaction_config.get("cameras") is not None
+        else config.get("camera_names", ["head"])
+    )
     if isinstance(raw_names, str):
         names = [raw_names]
     elif isinstance(raw_names, list):

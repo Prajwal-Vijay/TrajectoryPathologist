@@ -133,6 +133,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Evaluate every downloaded failure trajectory instead of one per task.",
     )
+    parser.add_argument(
+        "--episode-id",
+        dest="episode_ids",
+        action="append",
+        help="Evaluate only this failure episode ID. May be repeated.",
+    )
     parser.add_argument("--max-episodes", type=int, default=None)
     parser.add_argument("--config", dest="config_path", default=None)
     parser.add_argument("--bootstrap-samples", type=int, default=10_000)
@@ -166,6 +172,7 @@ def main() -> None:
         ronar_sample_period_sec=args.ronar_sample_period_sec,
         ronar_threshold=args.ronar_threshold,
         one_per_task=not args.all_failure_trajectories,
+        episode_ids=args.episode_ids,
         max_episodes=args.max_episodes,
         config_path=args.config_path,
         bootstrap_samples=args.bootstrap_samples,

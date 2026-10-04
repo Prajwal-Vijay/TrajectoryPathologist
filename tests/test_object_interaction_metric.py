@@ -10,6 +10,7 @@ from PIL import Image
 from pathologist.metrics import MetricEngine, ObjectInteractionMotionMetric
 from pathologist.metrics.base import MetricComputationContext
 from pathologist.metrics.object_interaction import (
+    COMPONENT_NAMES,
     GroundedSAM2InteractionSegmenter,
     InteractionMotionRecord,
     _aggregate_camera_records,
@@ -164,7 +165,14 @@ def test_camera_aggregation_keeps_components_from_scalar_winner() -> None:
 
     assert [sample.value for sample in samples] == [10.0]
     assert cameras == ["head"]
-    assert components == {
+    assert {
+        name: components[name]
+        for name in (
+            "object_residual_speed",
+            "gripper_object_relative_speed",
+            "gripper_object_separation_speed",
+        )
+    } == {
         "object_residual_speed": [10.0],
         "gripper_object_relative_speed": [0.0],
         "gripper_object_separation_speed": [0.0],
@@ -260,7 +268,7 @@ def test_overlapping_chunks_reseed_the_previous_object_identity(
     assert second.object_masks[0].any()
 
 
-def test_metric_emits_independent_ecod_components(
+def test_metric_engine_exposes_independent_interaction_ecod_metrics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     frames = [
@@ -315,22 +323,51 @@ def test_metric_emits_independent_ecod_components(
         "pathologist.metrics.object_interaction._compute_camera_records",
         fake_compute,
     )
-    result = ObjectInteractionMotionMetric().compute(
-        MetricComputationContext(
-            bundle=bundle,
-            config={
-                "metrics": {
-                    "object_interaction_motion": {
-                        "enabled": True,
-                        "camera_names": ["head"],
-                    }
+    profile = MetricEngine(
+        metrics=[ObjectInteractionMotionMetric()],
+        config={
+            "metrics": {
+                "object_interaction_motion": {
+                    "enabled": True,
+                    "camera_names": ["head"],
                 }
             },
-        )
-    )
+            "surprise": {"source_metrics": list(COMPONENT_NAMES)},
+        },
+    ).compute(bundle)
+    by_name = {metric.name: metric for metric in profile.metrics}
+    result = by_name["object_interaction_motion"]
+
+    assert set(COMPONENT_NAMES).issubset(by_name)
+    assert [
+        sample.value
+        for sample in by_name["object_residual_speed"].samples
+    ] == [1.0, 2.0, 3.0]
+    assert [
+        sample.value
+        for sample in by_name["gripper_object_relative_speed"].samples
+    ] == [2.0, 3.0, 4.0]
+    assert [
+        sample.value
+        for sample in by_name["gripper_object_separation_speed"].samples
+    ] == [3.0, 4.0, 5.0]
+    for component_name in COMPONENT_NAMES:
+        assert by_name[f"{component_name}_ecod_score"].metadata[
+            "score_tail_mode"
+        ] == "right"
+    assert set(
+        by_name["ecod_aggregate_score"].metadata["source_metric_names"]
+    ) == set(COMPONENT_NAMES)
 
     assert result.metadata["available"] is True
-    assert result.metadata["ecod_component_values"] == {
+    assert {
+        name: result.metadata["ecod_component_values"][name]
+        for name in (
+            "object_residual_speed",
+            "gripper_object_relative_speed",
+            "gripper_object_separation_speed",
+        )
+    } == {
         "object_residual_speed": [1.0, 2.0, 3.0],
         "gripper_object_relative_speed": [2.0, 3.0, 4.0],
         "gripper_object_separation_speed": [3.0, 4.0, 5.0],

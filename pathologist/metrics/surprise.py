@@ -23,10 +23,15 @@ DEFAULT_SURPRISE_SOURCE_METRICS = [
     "eef_translational_jerk",
     "eef_angular_jerk",
     "gripper_aperture_speed",
+    "joint_excess_path",
+    "gripper_excess_path",
+    "eef_excess_path",
     "visual_flow",
     "object_interaction_motion",
     "audio_spectral_flux",
 ]
+
+DEFAULT_SURPRISE_AGGREGATION_GROUPS: dict[str, list[str]] = {}
 
 @dataclass(slots=True)
 class ECODScoreResult:
@@ -52,9 +57,32 @@ class ECODSurpriseScorer:
         self.aggregation_reduction = str(
             self.surprise_config.get("aggregation_reduction", "sum")
         ).strip().lower()
+        self.within_group_reduction = str(
+            self.surprise_config.get("within_group_reduction", "mean")
+        ).strip().lower()
+        self.across_group_reduction = str(
+            self.surprise_config.get(
+                "across_group_reduction",
+                self.aggregation_reduction,
+            )
+        ).strip().lower()
+        self.pre_aggregation_log_sample_normalization = bool(
+            self.surprise_config.get(
+                "pre_aggregation_log_sample_normalization",
+                False,
+            )
+        )
         if self.aggregation_reduction not in {"sum", "max"}:
             raise ValueError(
                 "surprise.aggregation_reduction must be either 'sum' or 'max'"
+            )
+        if self.within_group_reduction not in {"mean", "max"}:
+            raise ValueError(
+                "surprise.within_group_reduction must be either 'mean' or 'max'"
+            )
+        if self.across_group_reduction not in {"sum", "max"}:
+            raise ValueError(
+                "surprise.across_group_reduction must be either 'sum' or 'max'"
             )
         source_metrics = self.surprise_config.get("source_metrics", DEFAULT_SURPRISE_SOURCE_METRICS)
         self.source_metrics = [
@@ -62,6 +90,12 @@ class ECODSurpriseScorer:
             for metric_name in source_metrics
             if isinstance(metric_name, str)
         ] or list(DEFAULT_SURPRISE_SOURCE_METRICS)
+        self.aggregation_groups = _parse_aggregation_groups(
+            self.surprise_config.get(
+                "aggregation_groups",
+                DEFAULT_SURPRISE_AGGREGATION_GROUPS,
+            )
+        )
         self.aggregate_metric_name = str(
             self.surprise_config.get("aggregate_metric_name", "ecod_aggregate_score")
         )
@@ -71,7 +105,20 @@ class ECODSurpriseScorer:
             "eef_translational_stalling": "left",
             "eef_rotational_stalling": "left",
             "gripper_aperture_speed": "right",
+            "joint_excess_path": "right",
+            "gripper_excess_path": "right",
+            "eef_excess_path": "right",
             "object_interaction_motion": "right",
+            "object_residual_speed": "right",
+            "gripper_object_relative_speed": "right",
+            "gripper_object_separation_speed": "right",
+            "unexplained_object_motion": "right",
+            "unexplained_object_motion_grasped": "right",
+            "object_visibility_drop": "right",
+            "object_visibility_drop_grasped": "right",
+            "grasp_attach_loss": "right",
+            "grasp_rel_motion": "right",
+            "grasp_aperture_collapse": "right",
             "audio_spectral_flux": "right",
         }
         if isinstance(tail_overrides, dict):
@@ -80,7 +127,20 @@ class ECODSurpriseScorer:
         self.score_tail_overrides["eef_translational_stalling"] = "left"
         self.score_tail_overrides["eef_rotational_stalling"] = "left"
         self.score_tail_overrides["gripper_aperture_speed"] = "right"
+        self.score_tail_overrides["joint_excess_path"] = "right"
+        self.score_tail_overrides["gripper_excess_path"] = "right"
+        self.score_tail_overrides["eef_excess_path"] = "right"
         self.score_tail_overrides["object_interaction_motion"] = "right"
+        self.score_tail_overrides["object_residual_speed"] = "right"
+        self.score_tail_overrides["gripper_object_relative_speed"] = "right"
+        self.score_tail_overrides["gripper_object_separation_speed"] = "right"
+        self.score_tail_overrides["unexplained_object_motion"] = "right"
+        self.score_tail_overrides["unexplained_object_motion_grasped"] = "right"
+        self.score_tail_overrides["object_visibility_drop"] = "right"
+        self.score_tail_overrides["object_visibility_drop_grasped"] = "right"
+        self.score_tail_overrides["grasp_attach_loss"] = "right"
+        self.score_tail_overrides["grasp_rel_motion"] = "right"
+        self.score_tail_overrides["grasp_aperture_collapse"] = "right"
         self.score_tail_overrides["audio_spectral_flux"] = "right"
 
         skewness_overrides = self.surprise_config.get("skewness_sign_overrides", {})
@@ -224,7 +284,7 @@ class ECODSurpriseScorer:
             for metric in profile.metrics
             if metric.name == metric_name and _scalar_samples(metric)
         ]
-        if len(source_metrics) < 2:
+        if not source_metrics:
             return MetricResult(
                 name=self.aggregate_metric_name,
                 description="Aggregate ECOD-style surprise score across configured source metrics.",
@@ -233,7 +293,9 @@ class ECODSurpriseScorer:
                 display_hint="ecod_aggregate_surprise_timeseries",
                 metadata={
                     "available": False,
-                    "unavailable_reason": "requires at least two source metrics with scalar samples",
+                    "unavailable_reason": (
+                        "requires at least one source metric with scalar samples"
+                    ),
                     "source_metric_names": [metric.name for metric in source_metrics],
                 },
             )
@@ -292,31 +354,37 @@ class ECODSurpriseScorer:
                 )
             score_tail_mode = _score_tail_mode(metric_name, self.score_tail_overrides)
             feature_score_tail_modes[metric_name] = score_tail_mode
-            per_feature_scores.append(
-                _scores_for_aggregate_tail_mode(scores, score_tail_mode)
+            aggregate_feature_scores = _scores_for_aggregate_tail_mode(
+                scores,
+                score_tail_mode,
             )
-        reduction = sum if self.aggregation_reduction == "sum" else max
-        aggregate_left_scores = [
-            reduction(
-                feature_score.left_tail_scores[index]
-                for feature_score in per_feature_scores
+            if self.pre_aggregation_log_sample_normalization:
+                aggregate_feature_scores = _divide_ecod_scores(
+                    aggregate_feature_scores,
+                    divisor=math.log(len(aligned["timestamps"])),
+                )
+            per_feature_scores.append(aggregate_feature_scores)
+        scores_by_metric = dict(
+            zip(aligned["metric_names"], per_feature_scores)
+        )
+        active_groups = _active_aggregation_groups(
+            aligned["metric_names"],
+            self.aggregation_groups,
+        )
+        scores_by_group = {
+            group_name: _reduce_ecod_score_results(
+                [scores_by_metric[name] for name in metric_names],
+                reduction=self.within_group_reduction,
             )
-            for index in range(len(aligned["timestamps"]))
-        ]
-        aggregate_right_scores = [
-            reduction(
-                feature_score.right_tail_scores[index]
-                for feature_score in per_feature_scores
-            )
-            for index in range(len(aligned["timestamps"]))
-        ]
-        aggregate_skew_scores = [
-            reduction(
-                feature_score.skew_tail_scores[index]
-                for feature_score in per_feature_scores
-            )
-            for index in range(len(aligned["timestamps"]))
-        ]
+            for group_name, metric_names in active_groups.items()
+        }
+        aggregate_branches = _reduce_ecod_score_results(
+            list(scores_by_group.values()),
+            reduction=self.across_group_reduction,
+        )
+        aggregate_left_scores = aggregate_branches.left_tail_scores
+        aggregate_right_scores = aggregate_branches.right_tail_scores
+        aggregate_skew_scores = aggregate_branches.skew_tail_scores
         aggregate_scores = [
             max(left_score, right_score, skew_score)
             for left_score, right_score, skew_score in zip(
@@ -325,11 +393,31 @@ class ECODSurpriseScorer:
                 aggregate_skew_scores,
             )
         ]
+        grouped_mode = bool(self.aggregation_groups)
+        if grouped_mode:
+            score_formula = (
+                "O_i=max(R_across({R_within({U_l_ij})}), "
+                "R_across({R_within({U_r_ij})}), "
+                "R_across({R_within({U_skew_ij})}))"
+            )
+            aggregation_mode = (
+                f"group_{self.within_group_reduction}_then_"
+                f"{self.across_group_reduction}"
+            )
+        else:
+            reduction_name = self.across_group_reduction
+            score_formula = (
+                f"O_i=max({reduction_name}_j U_l_ij, "
+                f"{reduction_name}_j U_r_ij, "
+                f"{reduction_name}_j U_skew_ij)"
+            )
+            aggregation_mode = f"flat_{reduction_name}"
         return MetricResult(
             name=self.aggregate_metric_name,
             description=(
-                "ECOD-style aggregate trajectory-relative surprise score; each timestamp "
-                f"row uses the {self.aggregation_reduction} of feature-wise ECOD scores."
+                "ECOD-style aggregate trajectory-relative surprise score; "
+                f"{self.within_group_reduction} within groups and "
+                f"{self.across_group_reduction} across groups."
             ),
             unit="ecod_surprise",
             samples=[
@@ -343,17 +431,38 @@ class ECODSurpriseScorer:
             metadata={
                 "available": True,
                 "source_metric_names": aligned["metric_names"],
-                "score_formula": (
-                    "O_i=max(max_j U_l_ij, max_j U_r_ij, max_j U_skew_ij)"
-                    if self.aggregation_reduction == "max"
-                    else "O_i=max(sum_j U_l_ij, sum_j U_r_ij, sum_j U_skew_ij)"
+                "score_formula": score_formula,
+                "aggregation_reduction": self.across_group_reduction,
+                "within_group_reduction": self.within_group_reduction,
+                "across_group_reduction": self.across_group_reduction,
+                "aggregation_mode": aggregation_mode,
+                "aggregation_groups": active_groups,
+                "pre_aggregation_log_sample_normalization": (
+                    self.pre_aggregation_log_sample_normalization
                 ),
-                "aggregation_reduction": self.aggregation_reduction,
+                "pre_aggregation_normalization_divisor": (
+                    math.log(len(aligned["timestamps"]))
+                    if self.pre_aggregation_log_sample_normalization
+                    else 1.0
+                ),
+                "pre_aggregation_sample_count": len(aligned["timestamps"]),
                 "alignment": aligned["alignment"],
                 "epsilon": self.epsilon,
                 "aggregate_left_tail_scores": aggregate_left_scores,
                 "aggregate_right_tail_scores": aggregate_right_scores,
                 "aggregate_skew_tail_scores": aggregate_skew_scores,
+                "group_left_tail_scores": {
+                    group_name: score.left_tail_scores
+                    for group_name, score in scores_by_group.items()
+                },
+                "group_right_tail_scores": {
+                    group_name: score.right_tail_scores
+                    for group_name, score in scores_by_group.items()
+                },
+                "group_skew_tail_scores": {
+                    group_name: score.skew_tail_scores
+                    for group_name, score in scores_by_group.items()
+                },
                 "feature_left_tail_scores": {
                     metric_name: score.left_tail_scores
                     for metric_name, score in zip(aligned["metric_names"], per_feature_scores)
@@ -389,6 +498,109 @@ class ECODSurpriseScorer:
                 ),
             },
         )
+
+
+def _parse_aggregation_groups(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, dict):
+        return {}
+    groups: dict[str, list[str]] = {}
+    assigned_metrics: dict[str, str] = {}
+    for raw_group_name, raw_metric_names in value.items():
+        if not isinstance(raw_group_name, str) or not raw_group_name.strip():
+            continue
+        if not isinstance(raw_metric_names, (list, tuple)):
+            continue
+        group_name = raw_group_name.strip()
+        metric_names: list[str] = []
+        for raw_metric_name in raw_metric_names:
+            if not isinstance(raw_metric_name, str) or not raw_metric_name.strip():
+                continue
+            metric_name = raw_metric_name.strip()
+            previous_group = assigned_metrics.get(metric_name)
+            if previous_group is not None and previous_group != group_name:
+                raise ValueError(
+                    f"Surprise metric {metric_name!r} belongs to both "
+                    f"{previous_group!r} and {group_name!r} aggregation groups."
+                )
+            assigned_metrics[metric_name] = group_name
+            if metric_name not in metric_names:
+                metric_names.append(metric_name)
+        if metric_names:
+            groups[group_name] = metric_names
+    return groups
+
+
+def _active_aggregation_groups(
+    metric_names: list[str],
+    configured_groups: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """Resolve available groups and retain unconfigured metrics as singletons."""
+
+    available = set(metric_names)
+    active: dict[str, list[str]] = {}
+    assigned: set[str] = set()
+    for group_name, configured_metric_names in configured_groups.items():
+        members = [
+            metric_name
+            for metric_name in configured_metric_names
+            if metric_name in available
+        ]
+        if members:
+            active[group_name] = members
+            assigned.update(members)
+    for metric_name in metric_names:
+        if metric_name not in assigned:
+            active[f"ungrouped:{metric_name}"] = [metric_name]
+    return active
+
+
+def _reduce_ecod_score_results(
+    scores: list[ECODScoreResult],
+    *,
+    reduction: str,
+) -> ECODScoreResult:
+    """Reduce ECOD branches pointwise without mixing tail directions."""
+
+    if reduction not in {"mean", "max", "sum"}:
+        raise ValueError(f"Unsupported ECOD score reduction: {reduction}")
+    if not scores:
+        return ECODScoreResult([], [], [], [], 0.0, 0)
+    count = min(len(score.outlier_scores) for score in scores)
+
+    def reduce_values(values: list[float]) -> float:
+        if reduction == "mean":
+            return sum(values) / len(values)
+        if reduction == "max":
+            return max(values)
+        return sum(values)
+
+    left_scores = [
+        reduce_values([score.left_tail_scores[index] for score in scores])
+        for index in range(count)
+    ]
+    right_scores = [
+        reduce_values([score.right_tail_scores[index] for score in scores])
+        for index in range(count)
+    ]
+    skew_scores = [
+        reduce_values([score.skew_tail_scores[index] for score in scores])
+        for index in range(count)
+    ]
+    return ECODScoreResult(
+        left_tail_scores=left_scores,
+        right_tail_scores=right_scores,
+        skew_tail_scores=skew_scores,
+        outlier_scores=[
+            max(left, right, skew)
+            for left, right, skew in zip(
+                left_scores,
+                right_scores,
+                skew_scores,
+            )
+        ],
+        skewness=0.0,
+        skewness_sign=0,
+    )
 
 
 def ecod_scores(
@@ -451,6 +663,25 @@ def _scores_for_aggregate_tail_mode(
         right_tail_scores=list(selected_scores),
         skew_tail_scores=list(selected_scores),
         outlier_scores=list(selected_scores),
+        skewness=scores.skewness,
+        skewness_sign=scores.skewness_sign,
+    )
+
+
+def _divide_ecod_scores(
+    scores: ECODScoreResult,
+    *,
+    divisor: float,
+) -> ECODScoreResult:
+    """Divide every ECOD branch before cross-metric aggregation."""
+
+    if divisor <= 0.0:
+        raise ValueError("ECOD score normalization divisor must be positive.")
+    return ECODScoreResult(
+        left_tail_scores=[score / divisor for score in scores.left_tail_scores],
+        right_tail_scores=[score / divisor for score in scores.right_tail_scores],
+        skew_tail_scores=[score / divisor for score in scores.skew_tail_scores],
+        outlier_scores=[score / divisor for score in scores.outlier_scores],
         skewness=scores.skewness,
         skewness_sign=scores.skewness_sign,
     )

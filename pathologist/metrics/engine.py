@@ -7,10 +7,19 @@ from typing import Any
 
 from pathologist.metrics.audio import AudioSpectralFluxMetric
 from pathologist.metrics.base import MetricComputationContext, MetricComputer
+from pathologist.metrics.excess_path import (
+    EefExcessPathMetric,
+    GripperExcessPathMetric,
+    JointExcessPathMetric,
+)
 from pathologist.metrics.gripper import (
     GripperApertureSpeedMetric,
     GripperChatterMetric,
     GripperTransitionMetric,
+)
+from pathologist.metrics.grasp_integrity import (
+    GraspIntegrityMetric,
+    grasp_integrity_component_metrics,
 )
 from pathologist.metrics.kinematics import (
     EefAngularJerkMetric,
@@ -25,7 +34,10 @@ from pathologist.metrics.kinematics import (
     StallingMetric,
     VelocitySpikeMetric,
 )
-from pathologist.metrics.object_interaction import ObjectInteractionMotionMetric
+from pathologist.metrics.object_interaction import (
+    ObjectInteractionMotionMetric,
+    object_interaction_component_metrics,
+)
 from pathologist.metrics.signals import (
     ActionDiscontinuityMetric,
     ActionDistributionEntropyMetric,
@@ -50,6 +62,9 @@ def default_metric_computers() -> list[MetricComputer]:
         ActionDistributionEntropyMetric(),
         JointPathLengthMetric(),
         EndEffectorCartesianPathLengthMetric(),
+        JointExcessPathMetric(),
+        GripperExcessPathMetric(),
+        EefExcessPathMetric(),
         MotionSmoothnessMetric(),
         VelocitySpikeMetric(),
         StallingMetric(),
@@ -63,6 +78,7 @@ def default_metric_computers() -> list[MetricComputer]:
         VisualFlowMetric(),
         FrozenDinoPatchNoveltyMetric(),
         ObjectInteractionMotionMetric(),
+        GraspIntegrityMetric(),
         AudioSpectralFluxMetric(),
         GripperApertureSpeedMetric(),
         GripperTransitionMetric(),
@@ -94,7 +110,14 @@ class MetricEngine:
             max_events_per_metric=max_events_per_metric,
             config=self.config,
         )
-        results = [metric.compute(context) for metric in self.metrics]
+        results = []
+        for metric in self.metrics:
+            result = metric.compute(context)
+            results.append(result)
+            if result.name == ObjectInteractionMotionMetric.name:
+                results.extend(object_interaction_component_metrics(result))
+            if result.name == GraspIntegrityMetric.name:
+                results.extend(grasp_integrity_component_metrics(result))
         global_events = []
         for result in results:
             global_events.extend(result.events)

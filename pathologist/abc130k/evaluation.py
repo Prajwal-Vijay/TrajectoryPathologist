@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import random
 from collections import defaultdict
@@ -17,7 +18,10 @@ from pathologist.adapters.abc130k_bundle import (
 from pathologist.config import deep_merge, load_pipeline_config
 from pathologist.events import MetricEventSelector
 from pathologist.metrics import MetricEngine
-from pathologist.metrics.surprise import DEFAULT_SURPRISE_SOURCE_METRICS
+from pathologist.metrics.surprise import (
+    DEFAULT_SURPRISE_SOURCE_METRICS,
+    ECODSurpriseScorer,
+)
 from pathologist.qa.robofac_selectors import (
     select_kite_flow_keyframes,
     select_uniform_keyframes,
@@ -28,6 +32,7 @@ from pathologist.qa.ronar_selector import (
     select_ronar_keyevents,
 )
 from pathologist.schemas.key_event import KeyEventProposal
+from pathologist.schemas.metrics import MetricProfile, MetricResult
 from pathologist.schemas.trajectory_bundle import CameraFrameRef, TrajectoryBundle
 
 
@@ -58,6 +63,17 @@ class ABCEpisodeRecord:
         return [segment for segment in self.segments if segment.failure]
 
 
+@dataclass(frozen=True, slots=True)
+class ABCNominalPhase:
+    """One semantic subtask phase used for segment-local ECOD scoring."""
+
+    phase_id: str
+    label: str
+    start_sec: float
+    end_sec: float
+    source_segment_id: str
+
+
 def run_abc130k_eval_pipeline(
     *,
     data_root: str | Path = "ABC-130k_subset/data/train",
@@ -81,6 +97,7 @@ def run_abc130k_eval_pipeline(
     ronar_sample_period_sec: float = RONAR_DEFAULT_SAMPLE_PERIOD_SEC,
     ronar_threshold: float = RONAR_DEFAULT_THRESHOLD,
     one_per_task: bool = True,
+    episode_ids: list[str] | tuple[str, ...] | None = None,
     max_episodes: int | None = None,
     config_path: str | Path | None = None,
     bootstrap_samples: int = 10_000,
@@ -142,6 +159,20 @@ def run_abc130k_eval_pipeline(
 
     records = discover_abc130k_episodes(root)
     failure_records = [record for record in records if record.failed_segments]
+    if episode_ids:
+        requested_episode_ids = {str(bundle_id) for bundle_id in episode_ids}
+        discovered_episode_ids = {record.bundle_id for record in failure_records}
+        missing_episode_ids = requested_episode_ids - discovered_episode_ids
+        if missing_episode_ids:
+            raise ValueError(
+                "Requested failure episode(s) not found: "
+                + ", ".join(sorted(missing_episode_ids))
+            )
+        failure_records = [
+            record
+            for record in failure_records
+            if record.bundle_id in requested_episode_ids
+        ]
     if one_per_task:
         failure_records = _one_failure_episode_per_task(failure_records)
     if max_episodes is not None:
@@ -165,6 +196,58 @@ def run_abc130k_eval_pipeline(
             robot_mask_cache_dir=resolved_robot_mask_cache_dir,
         ),
     )
+    surprise_config = (
+        config.get("surprise")
+        if isinstance(config.get("surprise"), dict)
+        else {}
+    )
+    configured_source_metrics = [
+        str(name)
+        for name in surprise_config.get(
+            "source_metrics",
+            ABC_PRISM_SOURCE_METRICS,
+        )
+        if isinstance(name, str)
+    ]
+    selector_config = (
+        config.get("selector")
+        if isinstance(config.get("selector"), dict)
+        else {}
+    )
+    flood_config = (
+        selector_config.get("surprise_flood")
+        if isinstance(selector_config.get("surprise_flood"), dict)
+        else {}
+    )
+    rolling_baseline_config = (
+        dict(flood_config.get("rolling_baseline"))
+        if isinstance(flood_config.get("rolling_baseline"), dict)
+        else {"enabled": False}
+    )
+    abc_config = (
+        config.get("abc130k")
+        if isinstance(config.get("abc130k"), dict)
+        else {}
+    )
+    ecod_scope = str(
+        abc_config.get("ecod_scope", "trajectory")
+    ).strip().lower()
+    if ecod_scope not in {
+        "trajectory",
+        "nominal_subtask",
+        "annotated_subtask",
+    }:
+        raise ValueError(
+            "abc130k.ecod_scope must be trajectory, nominal_subtask, "
+            "or annotated_subtask"
+        )
+    segment_peak_selection_scope = str(
+        abc_config.get("segment_peak_selection_scope", "per_segment")
+    ).strip().lower()
+    if segment_peak_selection_scope not in {"per_segment", "global"}:
+        raise ValueError(
+            "abc130k.segment_peak_selection_scope must be per_segment or global"
+        )
     if resume and summary_path.is_file():
         _validate_resume_settings(
             json.loads(summary_path.read_text(encoding="utf-8")),
@@ -194,7 +277,13 @@ def run_abc130k_eval_pipeline(
                     ABC_ROBOT_MASK_DUPLICATE_IOU_THRESHOLD
                 ),
                 "one_per_task": one_per_task,
-                "prism_source_metrics": list(ABC_PRISM_SOURCE_METRICS),
+                "prism_source_metrics": configured_source_metrics,
+                "prism_aggregation_reduction": str(
+                    surprise_config.get("aggregation_reduction", "sum")
+                ),
+                "rolling_baseline": rolling_baseline_config,
+                "ecod_scope": ecod_scope,
+                "segment_peak_selection_scope": segment_peak_selection_scope,
                 "force_telemetry_used": False,
                 "ronar_sample_period_sec": ronar_sample_period_sec,
                 "ronar_threshold": ronar_threshold,
@@ -258,7 +347,18 @@ def run_abc130k_eval_pipeline(
         "robot_mask_duplicate_iou_threshold": (
             ABC_ROBOT_MASK_DUPLICATE_IOU_THRESHOLD
         ),
-        "prism_source_metrics": list(ABC_PRISM_SOURCE_METRICS),
+        "prism_source_metrics": configured_source_metrics,
+        "prism_aggregation_reduction": str(
+            surprise_config.get("aggregation_reduction", "sum")
+        ),
+        "rolling_baseline": rolling_baseline_config,
+        "ecod_scope": ecod_scope,
+        "segment_peak_selection_scope": segment_peak_selection_scope,
+        "config_path": (
+            str(Path(config_path).expanduser().resolve())
+            if config_path is not None
+            else None
+        ),
         "force_telemetry_used": False,
         "ronar_sample_period_sec": ronar_sample_period_sec,
         "ronar_threshold": ronar_threshold,
@@ -312,15 +412,49 @@ def run_abc130k_eval_pipeline(
                 if "metric" in resolved_selectors
                 else None
             )
+            duration_sec = float(bundle.duration_sec or 0.0)
+            scoring_phases = (
+                _nominal_phase_windows(
+                    bundle.raw_metadata.get("abc130k_segments", []),
+                    duration_sec=duration_sec,
+                )
+                if ecod_scope == "nominal_subtask"
+                else (
+                    _annotated_phase_windows(
+                        bundle.raw_metadata.get("abc130k_segments", []),
+                        duration_sec=duration_sec,
+                    )
+                    if ecod_scope == "annotated_subtask"
+                    else []
+                )
+            )
             proposals = (
-                _metric_selector(config, top_k).select(
-                    metric_profile,
-                    trajectory_bundle=bundle,
-                    ecod_aggregate_path=None,
+                _segment_conditioned_metric_proposals(
+                    bundle=bundle,
+                    metric_profile=metric_profile,
+                    phases=scoring_phases,
+                    config=config,
+                    top_k=top_k,
+                    ecod_scope=ecod_scope,
+                    peak_selection_scope=segment_peak_selection_scope,
                 )
                 if metric_profile is not None
-                else []
+                and ecod_scope in {"nominal_subtask", "annotated_subtask"}
+                else (
+                    _metric_selector(config, top_k).select(
+                        metric_profile,
+                        trajectory_bundle=bundle,
+                        ecod_aggregate_path=None,
+                    )
+                    if metric_profile is not None
+                    else []
+                )
             )
+            if (
+                metric_profile is not None
+                and ecod_scope in {"nominal_subtask", "annotated_subtask"}
+            ):
+                proposals = proposals[:top_k]
             episode_rows = [
                 _evaluate_selector(
                     selector_name=name,
@@ -345,6 +479,9 @@ def run_abc130k_eval_pipeline(
                     "annotation_path": str(record.annotation_path),
                     "duration_sec": bundle.duration_sec,
                     "failed_segment_count": len(record.failed_segments),
+                    "ecod_scope": ecod_scope,
+                    "segment_peak_selection_scope": segment_peak_selection_scope,
+                    "scoring_phase_count": len(scoring_phases),
                     "decoded_frame_count": len(bundle.camera_frames),
                     "stream_counts": {
                         stream.name: len(stream.timestamps_sec) for stream in bundle.streams
@@ -658,15 +795,29 @@ def _proposal_peak(proposal: KeyEventProposal, rank: int) -> dict[str, Any]:
                 break
     if peak_sec is None:
         peak_sec = float(proposal.time_window.center_sec)
-    return {
+    peak = {
         "rank": rank,
         "peak_sec": peak_sec,
         "start_sec": proposal.time_window.start_sec,
         "end_sec": proposal.time_window.end_sec,
-        "rank_score": metadata.get("rank_score"),
+        "rank_score": metadata.get("proposal_score"),
         "rank_score_type": metadata.get("rank_score_type"),
         "selection_source": "metric",
     }
+    if metadata.get("ecod_scope") in {
+        "nominal_subtask",
+        "annotated_subtask",
+    }:
+        peak.update(
+            {
+                "ecod_scope": metadata.get("ecod_scope"),
+                "phase_id": metadata.get("phase_id"),
+                "phase_label": metadata.get("phase_label"),
+                "phase_start_sec": metadata.get("phase_start_sec"),
+                "phase_end_sec": metadata.get("phase_end_sec"),
+            }
+        )
+    return peak
 
 
 def _pad_selected_peaks_uniformly(
@@ -957,6 +1108,326 @@ def _one_failure_episode_per_task(records: list[ABCEpisodeRecord]) -> list[ABCEp
     ]
 
 
+def _nominal_phase_windows(
+    segments: Any,
+    *,
+    duration_sec: float,
+) -> list[ABCNominalPhase]:
+    """Build semantic phases without using mistake intervals as boundaries.
+
+    A reset starts an excluded gap: the preceding phase stops when reset begins,
+    and scoring resumes only at the next nominal annotation.
+    """
+
+    if not isinstance(segments, list) or duration_sec <= 0:
+        return []
+    ordered = sorted(
+        (
+            segment
+            for segment in segments
+            if isinstance(segment, dict)
+            and isinstance(segment.get("start_sec"), (int, float))
+        ),
+        key=lambda segment: float(segment["start_sec"]),
+    )
+    nominal = [
+        segment
+        for segment in ordered
+        if segment.get("failure") is not True
+        and segment.get("ignored") is not True
+    ]
+    reset_starts = [
+        float(segment["start_sec"])
+        for segment in ordered
+        if segment.get("ignored") is True
+    ]
+    phases: list[ABCNominalPhase] = []
+    for index, segment in enumerate(nominal):
+        start_sec = max(0.0, float(segment["start_sec"]))
+        next_nominal_start = (
+            float(nominal[index + 1]["start_sec"])
+            if index + 1 < len(nominal)
+            else duration_sec
+        )
+        reset_start = min(
+            (
+                timestamp
+                for timestamp in reset_starts
+                if start_sec < timestamp < next_nominal_start
+            ),
+            default=next_nominal_start,
+        )
+        end_sec = min(duration_sec, next_nominal_start, reset_start)
+        if end_sec <= start_sec:
+            continue
+        phases.append(
+            ABCNominalPhase(
+                phase_id=f"phase_{len(phases):04d}",
+                label=str(segment.get("text") or "unknown"),
+                start_sec=start_sec,
+                end_sec=end_sec,
+                source_segment_id=str(segment.get("segment_id") or ""),
+            )
+        )
+    return phases
+
+
+def _annotated_phase_windows(
+    segments: Any,
+    *,
+    duration_sec: float,
+) -> list[ABCNominalPhase]:
+    """Use every annotated subtask interval as an independent ECOD scope."""
+
+    if not isinstance(segments, list) or duration_sec <= 0:
+        return []
+    ordered = sorted(
+        (
+            segment
+            for segment in segments
+            if isinstance(segment, dict)
+            and isinstance(segment.get("start_sec"), (int, float))
+            and isinstance(segment.get("end_sec"), (int, float))
+        ),
+        key=lambda segment: float(segment["start_sec"]),
+    )
+    phases: list[ABCNominalPhase] = []
+    for segment in ordered:
+        start_sec = min(duration_sec, max(0.0, float(segment["start_sec"])))
+        end_sec = min(duration_sec, max(start_sec, float(segment["end_sec"])))
+        if end_sec <= start_sec:
+            continue
+        phases.append(
+            ABCNominalPhase(
+                phase_id=f"phase_{len(phases):04d}",
+                label=str(segment.get("text") or "unknown"),
+                start_sec=start_sec,
+                end_sec=end_sec,
+                source_segment_id=str(segment.get("segment_id") or ""),
+            )
+        )
+    return phases
+
+
+def _segment_conditioned_metric_proposals(
+    *,
+    bundle: TrajectoryBundle,
+    metric_profile: MetricProfile,
+    phases: list[ABCNominalPhase],
+    config: dict[str, Any],
+    top_k: int,
+    ecod_scope: str = "nominal_subtask",
+    peak_selection_scope: str = "per_segment",
+) -> list[KeyEventProposal]:
+    """Recompute ECOD within each phase, then retain a global peak budget."""
+
+    surprise_config = (
+        config.get("surprise")
+        if isinstance(config.get("surprise"), dict)
+        else {}
+    )
+    source_names = {
+        str(name)
+        for name in surprise_config.get(
+            "source_metrics",
+            ABC_PRISM_SOURCE_METRICS,
+        )
+        if isinstance(name, str)
+    }
+    source_metrics = [
+        metric
+        for metric in metric_profile.metrics
+        if metric.name in source_names
+    ]
+    scorer = ECODSurpriseScorer(config=config)
+    selector = _metric_selector(config, top_k)
+    candidates: list[KeyEventProposal] = []
+    stitched_aggregate: MetricResult | None = None
+    aggregate_metric_name = str(
+        surprise_config.get("aggregate_metric_name", "ecod_aggregate_score")
+    )
+
+    for phase in phases:
+        phase_metrics = [
+            sliced
+            for metric in source_metrics
+            if (
+                sliced := _slice_metric_to_phase(
+                    metric,
+                    start_sec=phase.start_sec,
+                    end_sec=phase.end_sec,
+                )
+            ).samples
+        ]
+        if len(phase_metrics) < 2:
+            continue
+        phase_profile = MetricProfile(
+            bundle_id=f"{bundle.bundle_id}_{phase.phase_id}",
+            metrics=phase_metrics,
+            metadata={
+                "ecod_scope": ecod_scope,
+                "phase_id": phase.phase_id,
+                "phase_label": phase.label,
+                "phase_start_sec": phase.start_sec,
+                "phase_end_sec": phase.end_sec,
+            },
+        )
+        scored_profile = scorer.append_to_profile(phase_profile)
+        if peak_selection_scope == "global":
+            phase_aggregate = next(
+                (
+                    metric
+                    for metric in scored_profile.metrics
+                    if metric.name == aggregate_metric_name
+                    and metric.samples
+                ),
+                None,
+            )
+            if phase_aggregate is not None:
+                if stitched_aggregate is None:
+                    stitched_aggregate = copy.deepcopy(phase_aggregate)
+                    stitched_aggregate.samples = []
+                    stitched_aggregate.events = []
+                    stitched_aggregate.metadata = {
+                        "available": True,
+                        "ecod_scope": ecod_scope,
+                        "segment_peak_selection_scope": "global",
+                    }
+                stitched_aggregate.samples.extend(
+                    copy.deepcopy(phase_aggregate.samples)
+                )
+            continue
+        phase_proposals = selector.select(
+            scored_profile,
+            trajectory_bundle=bundle,
+            ecod_aggregate_path=None,
+        )
+        for phase_rank, proposal in enumerate(phase_proposals, start=1):
+            proposal.metadata.update(
+                {
+                    "ecod_scope": ecod_scope,
+                    "phase_id": phase.phase_id,
+                    "phase_label": phase.label,
+                    "phase_start_sec": phase.start_sec,
+                    "phase_end_sec": phase.end_sec,
+                    "phase_rank": phase_rank,
+                    "phase_source_segment_id": phase.source_segment_id,
+                    "segment_peak_selection_scope": "per_segment",
+                }
+            )
+            candidates.append(proposal)
+
+    if peak_selection_scope == "global":
+        if stitched_aggregate is None or len(stitched_aggregate.samples) < 3:
+            return []
+        stitched_aggregate.samples.sort(
+            key=lambda sample: float(sample.timestamp_sec)
+        )
+        stitched_profile = MetricProfile(
+            bundle_id=f"{bundle.bundle_id}_stitched_segment_ecod",
+            metrics=[stitched_aggregate],
+            metadata={
+                "ecod_scope": ecod_scope,
+                "segment_peak_selection_scope": "global",
+            },
+        )
+        selected = selector.select(
+            stitched_profile,
+            trajectory_bundle=bundle,
+            ecod_aggregate_path=None,
+        )[:top_k]
+        for rank, proposal in enumerate(selected, start=1):
+            peak_sec = _numeric_metadata_value(proposal, "peak_sec")
+            peak_phase = next(
+                (
+                    phase
+                    for phase in phases
+                    if phase.start_sec <= peak_sec < phase.end_sec
+                ),
+                None,
+            )
+            proposal.metadata.update(
+                {
+                    "ecod_scope": ecod_scope,
+                    "segment_peak_selection_scope": "global",
+                    "timeline_rank": rank,
+                    "global_rank": rank,
+                }
+            )
+            if peak_phase is not None:
+                proposal.metadata.update(
+                    {
+                        "phase_id": peak_phase.phase_id,
+                        "phase_label": peak_phase.label,
+                        "phase_start_sec": peak_phase.start_sec,
+                        "phase_end_sec": peak_phase.end_sec,
+                        "phase_source_segment_id": (
+                            peak_phase.source_segment_id
+                        ),
+                    }
+                )
+        return selected
+
+    candidates.sort(
+        key=lambda proposal: (
+            -_numeric_metadata_value(proposal, "proposal_score"),
+            -_numeric_metadata_value(proposal, "peak_score"),
+            _numeric_metadata_value(proposal, "peak_sec"),
+        )
+    )
+    selected = candidates[:top_k]
+    for rank, proposal in enumerate(selected, start=1):
+        proposal.metadata["timeline_rank"] = rank
+        proposal.metadata["global_rank"] = rank
+    return selected
+
+
+def _slice_metric_to_phase(
+    metric: MetricResult,
+    *,
+    start_sec: float,
+    end_sec: float,
+) -> MetricResult:
+    """Copy one raw metric with samples restricted to a half-open interval."""
+
+    result = copy.deepcopy(metric)
+    selected_indices = [
+        index
+        for index, sample in enumerate(metric.samples)
+        if start_sec <= float(sample.timestamp_sec) < end_sec
+    ]
+    result.samples = [copy.deepcopy(metric.samples[index]) for index in selected_indices]
+    result.events = [
+        copy.deepcopy(event)
+        for event in metric.events
+        if (
+            event.time_window.end_sec is None
+            or event.time_window.end_sec > start_sec
+        )
+        and event.time_window.start_sec < end_sec
+    ]
+    component_values = metric.metadata.get("ecod_component_values")
+    if isinstance(component_values, dict):
+        result.metadata["ecod_component_values"] = {
+            name: [values[index] for index in selected_indices]
+            for name, values in component_values.items()
+            if isinstance(name, str)
+            and isinstance(values, (list, tuple))
+            and len(values) == len(metric.samples)
+        }
+    return result
+
+
+def _numeric_metadata_value(
+    proposal: KeyEventProposal,
+    key: str,
+) -> float:
+    value = proposal.metadata.get(key)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return float("-inf")
+
+
 def _metric_selector(config: dict[str, Any], top_k: int) -> MetricEventSelector:
     selector_config = config.get("selector", {})
     flood = selector_config.get("surprise_flood", {})
@@ -1024,9 +1495,6 @@ def _abc_config_override(
                 "ranking": metric_ranking,
                 "smoothing_window": smoothing_window,
             }
-        },
-        "surprise": {
-            "source_metrics": list(ABC_PRISM_SOURCE_METRICS)
         },
     }
 
@@ -1152,12 +1620,14 @@ def _running_metrics_message(
         selector_stats = stats.get(selector_name)
         if not isinstance(selector_stats, dict):
             continue
-        point_precision = 100.0 * float(selector_stats.get("point_precision_at_k", 0.0))
+        point_precision = 100.0 * float(
+            selector_stats.get("point_precision_at_k") or 0.0
+        )
         segment_recall = 100.0 * float(
-            selector_stats.get("failed_segment_recall_at_k", 0.0)
+            selector_stats.get("failed_segment_recall_at_k") or 0.0
         )
         trajectory_recall = 100.0 * float(
-            selector_stats.get("episode_recall_at_k", 0.0)
+            selector_stats.get("episode_recall_at_k") or 0.0
         )
         selector_summaries.append(
             f"{selector_name}: P={point_precision:.1f}% "

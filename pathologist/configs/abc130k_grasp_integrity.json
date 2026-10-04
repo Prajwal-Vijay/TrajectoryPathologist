@@ -1,0 +1,93 @@
+{
+  "abc130k": {
+    "ecod_scope": "trajectory"
+  },
+  "metrics": {
+    "visual_flow": {
+      "enabled": false
+    },
+    "visual_patch_novelty": {
+      "enabled": false
+    },
+    "object_interaction_motion": {
+      "enabled": false
+    },
+    "grasp_integrity": {
+      "enabled": true,
+      "tracking_enabled": true,
+      "native_fps": 30.0,
+      "output_hz": 5.0,
+      "other_arm_mask_hz": 5.0,
+      "qa_output_dir": "/media/helen/28TB_VOL4/ABC130K_grasp_integrity/initialization_qa_v5/per_trajectory",
+      "enter": 0.4,
+      "exit": 0.6,
+      "settle_speed_per_sec": 0.05,
+      "settle_duration_sec": 0.1,
+      "settle_timeout_sec": 1.0,
+      "plateau_duration_sec": 0.2,
+      "open_rise": 0.05,
+      "minimum_window_sec": 0.3,
+      "empty_width_threshold": 0.03,
+      "blind_capacity_threshold": 0.05,
+      "contact_band_radius_fraction": 0.02,
+      "arms": {
+        "left": {
+          "wrist_camera": "left_wrist",
+          "gripper_state": "/left-ee-state",
+          "gripper_command": "/left-ee-action",
+          "empty_closed": 0.0015100073751931713,
+          "finger_entry_edge": "bottom",
+          "finger_aperture_shift_fraction": 0.355,
+          "finger_polygons_normalized": [
+            [[0.43, 1.00], [0.465, 0.88], [0.49, 0.82], [0.51, 0.83], [0.555, 1.00]],
+            [[0.445, 1.00], [0.49, 0.83], [0.51, 0.82], [0.535, 0.88], [0.57, 1.00]]
+          ]
+        },
+        "right": {
+          "wrist_camera": "right_wrist",
+          "gripper_state": "/right-ee-state",
+          "gripper_command": "/right-ee-action",
+          "empty_closed": 0.0023828435266084096,
+          "finger_entry_edge": "bottom",
+          "finger_aperture_shift_fraction": 0.355,
+          "finger_polygons_normalized": [
+            [[0.43, 1.00], [0.465, 0.88], [0.49, 0.82], [0.51, 0.83], [0.555, 1.00]],
+            [[0.445, 1.00], [0.49, 0.83], [0.51, 0.82], [0.535, 0.88], [0.57, 1.00]]
+          ]
+        }
+      },
+      "sam3": {
+        "repo": "facebookresearch/sam3",
+        "commit": "2345a4ad109ac29c569da749c91d84f10dc08c40",
+        "checkpoint_repo": "facebook/sam3.1",
+        "checkpoint_name": "sam3.1_multiplex.pt",
+        "video_version": "sam3",
+        "default_output_probability_threshold": 0.5,
+        "cache_dir": "/media/helen/28TB_VOL4/ABC130K_grasp_integrity/sam3_cache"
+      }
+    }
+  },
+  "selector": {
+    "surprise_flood": {
+      "rolling_baseline": {
+        "enabled": false
+      }
+    }
+  },
+  "surprise": {
+    "source_metrics": [
+      "grasp_attach_loss",
+      "grasp_rel_motion",
+      "grasp_aperture_collapse"
+    ],
+    "aggregation_groups": {
+      "grasp_integrity": [
+        "grasp_attach_loss",
+        "grasp_rel_motion",
+        "grasp_aperture_collapse"
+      ]
+    },
+    "within_group_reduction": "mean",
+    "across_group_reduction": "sum"
+  }
+}

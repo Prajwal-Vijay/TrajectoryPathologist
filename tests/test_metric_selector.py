@@ -7,7 +7,10 @@ import random
 from pathlib import Path
 
 from pathologist.events import MetricEventSelector
-from pathologist.events.metric_selector import _extract_surprise_flood_events
+from pathologist.events.metric_selector import (
+    _extract_surprise_flood_events,
+    _rolling_median_mad_residual,
+)
 from pathologist.schemas import (
     BundleFormat,
     CameraFrameRef,
@@ -124,6 +127,70 @@ def test_metric_selector_writes_ecod_aggregate_plots_and_local_maxima(tmp_path: 
         0.7,
         0.8,
     ]
+
+
+def test_rolling_median_mad_residual_removes_phase_baselines() -> None:
+    values = [2.0] * 20 + [20.0] * 20
+    values[30] = 26.0
+    timestamps = [float(index) for index in range(len(values))]
+
+    residual, debug = _rolling_median_mad_residual(
+        values=values,
+        timestamps=timestamps,
+        window_sec=9.0,
+        mad_floor_fraction=0.1,
+        epsilon=0.1,
+        clip_negative=True,
+    )
+
+    assert debug["enabled"] is True
+    assert debug["window_samples"] == 9
+    assert residual[10] == 0.0
+    assert residual[25] == 0.0
+    assert residual[30] > 1.0
+
+
+def test_metric_selector_records_rolling_residualization(tmp_path: Path) -> None:
+    output_base = tmp_path / "rolling" / "demo"
+    values = [2.0] * 20 + [20.0] * 20
+    values[30] = 26.0
+    profile = MetricProfile(
+        bundle_id="rolling_demo",
+        metrics=[
+            MetricResult(
+                name="ecod_aggregate_score",
+                description="aggregate surprise",
+                samples=[
+                    MetricSample(timestamp_sec=float(index), value=value)
+                    for index, value in enumerate(values)
+                ],
+            )
+        ],
+    )
+    selector = MetricEventSelector(
+        surprise_flood_config={
+            "aggregate_metric_name": "ecod_aggregate_score",
+            "smoothing_window": 1,
+            "ranking": "persistence",
+            "max_proposals": 1,
+            "rolling_baseline": {
+                "enabled": True,
+                "window_sec": 9.0,
+                "mad_floor_fraction": 0.1,
+                "epsilon": 0.1,
+                "clip_negative": True,
+            },
+        },
+    )
+
+    proposals = selector.select(profile, ecod_aggregate_path=output_base)
+    payload = json.loads(output_base.with_suffix(".json").read_text(encoding="utf-8"))
+
+    assert proposals[0].metadata["peak_sec"] == 30.0
+    assert proposals[0].metadata["rolling_baseline"]["enabled"] is True
+    assert payload["raw_scores"][25] == 20.0
+    assert payload["selection_input_scores"][25] == 0.0
+    assert payload["rolling_baseline"]["window_samples"] == 9
 
 
 def test_metric_selector_returns_no_proposals_without_aggregate_score() -> None:
