@@ -165,6 +165,12 @@ def run_abc130k_eval_pipeline(
             robot_mask_cache_dir=resolved_robot_mask_cache_dir,
         ),
     )
+    prism_source_metrics = _configured_prism_source_metrics(config)
+    extract_camera_frames = (
+        any(name != "metric" for name in resolved_selectors)
+        or "metric" in resolved_pad_selectors
+        or "visual_flow" in prism_source_metrics
+    )
     if resume and summary_path.is_file():
         _validate_resume_settings(
             json.loads(summary_path.read_text(encoding="utf-8")),
@@ -194,7 +200,8 @@ def run_abc130k_eval_pipeline(
                     ABC_ROBOT_MASK_DUPLICATE_IOU_THRESHOLD
                 ),
                 "one_per_task": one_per_task,
-                "prism_source_metrics": list(ABC_PRISM_SOURCE_METRICS),
+                "prism_source_metrics": list(prism_source_metrics),
+                "camera_frames_extracted": extract_camera_frames,
                 "force_telemetry_used": False,
                 "ronar_sample_period_sec": ronar_sample_period_sec,
                 "ronar_threshold": ronar_threshold,
@@ -258,7 +265,8 @@ def run_abc130k_eval_pipeline(
         "robot_mask_duplicate_iou_threshold": (
             ABC_ROBOT_MASK_DUPLICATE_IOU_THRESHOLD
         ),
-        "prism_source_metrics": list(ABC_PRISM_SOURCE_METRICS),
+        "prism_source_metrics": list(prism_source_metrics),
+        "camera_frames_extracted": extract_camera_frames,
         "force_telemetry_used": False,
         "ronar_sample_period_sec": ronar_sample_period_sec,
         "ronar_threshold": ronar_threshold,
@@ -305,7 +313,7 @@ def run_abc130k_eval_pipeline(
                 camera_names=resolved_camera_names,
                 camera_sample_hz=camera_sample_hz,
                 robot_downsample_hz=robot_downsample_hz,
-                extract_frames=True,
+                extract_frames=extract_camera_frames,
             )
             metric_profile = (
                 MetricEngine(config=config).compute(bundle)
@@ -1022,10 +1030,16 @@ def _abc_config_override(
                 "smoothing_window": smoothing_window,
             }
         },
-        "surprise": {
-            "source_metrics": list(ABC_PRISM_SOURCE_METRICS)
-        },
     }
+
+
+def _configured_prism_source_metrics(config: dict[str, Any]) -> tuple[str, ...]:
+    surprise = config.get("surprise", {})
+    configured = surprise.get("source_metrics") if isinstance(surprise, dict) else None
+    if not isinstance(configured, list):
+        return ABC_PRISM_SOURCE_METRICS
+    names = tuple(name for name in configured if isinstance(name, str) and name)
+    return names or ABC_PRISM_SOURCE_METRICS
 
 
 def _resolve_camera_names(

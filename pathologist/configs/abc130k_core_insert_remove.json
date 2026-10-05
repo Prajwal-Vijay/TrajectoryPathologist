@@ -1,0 +1,13 @@
+{
+  "surprise": {
+    "source_metrics": [
+      "action_discontinuity",
+      "motion_smoothness",
+      "eef_translational_stalling",
+      "eef_rotational_stalling",
+      "eef_translational_jerk",
+      "eef_angular_jerk"
+    ],
+    "aggregation_reduction": "sum"
+  }
+}

@@ -7,6 +7,7 @@ from pathologist.abc130k.evaluation import (
     ABC_PRISM_SOURCE_METRICS,
     _abc_config_override,
     _aggregate_rows,
+    _configured_prism_source_metrics,
     _contains,
     _evaluate_selector,
     _running_metrics_message,
@@ -67,7 +68,7 @@ def test_abc_flow_strides_and_robot_masking_are_configured_independently(
     ]
     assert config["metrics"]["visual_flow"]["resize"] == [128, 128]
     assert config["metrics"]["visual_flow"]["spatial_aggregation"] == "mean"
-    assert config["surprise"]["source_metrics"] == list(ABC_PRISM_SOURCE_METRICS)
+    assert "surprise" not in config
     assert config["robofac_qa"]["kite_flow"]["frame_stride"] == 4
     assert config["robofac_qa"]["kite_flow"]["camera_name"] == "top"
     assert config["metrics"]["visual_flow"]["robot_masking"]["enabled"] is True
@@ -84,6 +85,19 @@ def test_abc_flow_strides_and_robot_masking_are_configured_independently(
         config["metrics"]["visual_flow"]["robot_masking"]["duplicate_iou_threshold"]
         == pytest.approx(0.8)
     )
+
+
+def test_abc_prism_source_metrics_honor_explicit_config() -> None:
+    core_metrics = [
+        "action_discontinuity",
+        "eef_translational_stalling",
+        "eef_translational_jerk",
+    ]
+
+    assert _configured_prism_source_metrics(
+        {"surprise": {"source_metrics": core_metrics}}
+    ) == tuple(core_metrics)
+    assert _configured_prism_source_metrics({}) == ABC_PRISM_SOURCE_METRICS
 
 
 def test_abc_cli_accepts_independent_flow_strides_and_robot_masking() -> None:
