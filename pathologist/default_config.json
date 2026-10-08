@@ -70,6 +70,9 @@
       "min_chatter_transitions": 4,
       "medium_percentile": 95,
       "high_percentile": 99
+    },
+    "grasp_integrity": {
+      "enabled": false
     }
   },
   "selector": {

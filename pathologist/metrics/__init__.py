@@ -3,6 +3,13 @@
 from pathologist.metrics.audio import AudioSpectralFluxMetric
 from pathologist.metrics.base import MetricComputationContext, MetricComputer
 from pathologist.metrics.engine import MetricEngine, default_metric_computers
+from pathologist.metrics.grasp_integrity import (
+    GraspApertureCollapseMetric,
+    GraspAttachLossMetric,
+    GraspObjectGapMetric,
+    GraspRelativeMotionMetric,
+    register_grasp_segmenter,
+)
 from pathologist.metrics.gripper import (
     GripperApertureSpeedMetric,
     GripperChatterMetric,
@@ -45,6 +52,10 @@ __all__ = [
     "EndEffectorCartesianPathLengthMetric",
     "ECODSurpriseScorer",
     "ForceNormMetric",
+    "GraspApertureCollapseMetric",
+    "GraspAttachLossMetric",
+    "GraspObjectGapMetric",
+    "GraspRelativeMotionMetric",
     "GripperApertureSpeedMetric",
     "GripperChatterMetric",
     "GripperTransitionMetric",
@@ -59,4 +70,5 @@ __all__ = [
     "VisualFlowMetric",
     "default_metric_computers",
     "ecod_scores",
+    "register_grasp_segmenter",
 ]

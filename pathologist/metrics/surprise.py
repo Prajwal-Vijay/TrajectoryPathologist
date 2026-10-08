@@ -71,6 +71,10 @@ class ECODSurpriseScorer:
             "eef_rotational_stalling": "left",
             "gripper_aperture_speed": "right",
             "audio_spectral_flux": "right",
+            "grasp_attach_loss": "right",
+            "grasp_object_gap": "right",
+            "grasp_relative_motion": "right",
+            "grasp_aperture_collapse": "right",
         }
         if isinstance(tail_overrides, dict):
             self.score_tail_overrides.update(tail_overrides)

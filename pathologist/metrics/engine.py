@@ -7,6 +7,12 @@ from typing import Any
 
 from pathologist.metrics.audio import AudioSpectralFluxMetric
 from pathologist.metrics.base import MetricComputationContext, MetricComputer
+from pathologist.metrics.grasp_integrity import (
+    GraspApertureCollapseMetric,
+    GraspAttachLossMetric,
+    GraspObjectGapMetric,
+    GraspRelativeMotionMetric,
+)
 from pathologist.metrics.gripper import (
     GripperApertureSpeedMetric,
     GripperChatterMetric,
@@ -63,6 +69,10 @@ def default_metric_computers() -> list[MetricComputer]:
         GripperApertureSpeedMetric(),
         GripperTransitionMetric(),
         GripperChatterMetric(),
+        GraspAttachLossMetric(),
+        GraspObjectGapMetric(),
+        GraspRelativeMotionMetric(),
+        GraspApertureCollapseMetric(),
     ]
 
 
