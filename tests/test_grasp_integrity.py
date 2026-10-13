@@ -174,63 +174,133 @@ def _flow(shape, vector):
     return flow
 
 
-def test_selection_prefers_object_moving_with_fingers() -> None:
-    shape = (60, 80)
-    finger = np.zeros(shape, bool)
+SEL_SHAPE = (60, 80)
+
+
+def _selection_scene(n_frames=6, pan_px=3, wall=False):
+    """Grey wrist frames: textured background panning ``pan_px``/frame, fixed fingers and held object.
+
+    With ``wall``, the left part of the background is a plain grey surface whose
+    right edge pans with the background (like the green wall in the overlays).
+    Returns frames, finger, held, table (a textured background patch beside the
+    fingers) and wall masks, all from frame 0.
+    """
+
+    rng = np.random.default_rng(1)
+    height, width = SEL_SHAPE
+    background = cv2.GaussianBlur(
+        rng.uniform(40, 220, (height, width + pan_px * n_frames + 10)).astype(np.float32), (0, 0), 0.8
+    )
+    held_tex = rng.uniform(150, 255, (10, 10)).astype(np.float32)
+    finger = np.zeros(SEL_SHAPE, bool)
     finger[45:, 30:50] = True
-    band = gi.contact_band(finger, 3)
-    held = np.zeros(shape, bool)
+    held = np.zeros(SEL_SHAPE, bool)
     held[35:45, 35:45] = True
-    table = np.zeros(shape, bool)
-    table[40:50, 18:28] = True  # touches the band on the left, moves with the background
-    flows = []
-    for _ in range(5):
-        flow = _flow(shape, (4.0, 0.0))  # background moves
-        flow[finger] = 0.0
-        flow[held] = 0.0
-        flows.append(flow)
+    frames = []
+    for k in range(n_frames):
+        image = background[:, pan_px * k : pan_px * k + width].copy()
+        if wall:
+            image[:, : max(0, 30 - pan_px * k)] = 128.0  # wall edge pans left with the background
+        image[finger] = 20.0
+        image[35:45, 35:45] = held_tex
+        frames.append(np.clip(image, 0, 255).astype(np.uint8))
+    table = np.zeros(SEL_SHAPE, bool)
+    table[38:52, 18:28] = True
+    wall_mask = np.zeros(SEL_SHAPE, bool)
+    wall_mask[:, :30] = True
+    wall_mask &= ~finger
+    return frames, finger, held, table, wall_mask
+
+
+def test_selection_prefers_rigid_object_over_moving_table() -> None:
+    frames, finger, held, table, _ = _selection_scene()
+    band = gi.contact_band(finger, 3)
     index, info = gi.select_held_object(
-        [table, held], finger=finger, band=band, other_arm=None, flows=flows,
-        vision_config=CONFIG["vision"],
+        [table, held], finger=finger, band=band, grays=frames, vision_config=CONFIG["vision"],
     )
     assert info["confidence"] == "high"
     assert info["masks"][index][40, 40]
-    assert min(c for c in info["comotion"] if c is not None) < 0.2
+    rigid, moving = info["rigidity"][1], info["rigidity"][0]
+    assert rigid > 0.95 and moving < 0.5
 
 
-def test_selection_without_background_motion_falls_back_to_contact() -> None:
-    shape = (60, 80)
-    finger = np.zeros(shape, bool)
-    finger[45:, 30:50] = True
+def test_plain_moving_wall_is_not_mistaken_for_the_held_object() -> None:
+    """Regression for the overlays: zero optical flow on a plain wall read as 'moves with the fingers'."""
+
+    frames, finger, held, _, wall = _selection_scene(wall=True)
     band = gi.contact_band(finger, 3)
-    small = np.zeros(shape, bool)
-    small[41:45, 46:52] = True
-    large = np.zeros(shape, bool)
-    large[33:45, 33:47] = True
-    flows = [_flow(shape, (0.0, 0.0)) for _ in range(5)]
+    assert (wall & band).sum() > (held & band).sum()  # the wall has more contact
+    flow = cv2.calcOpticalFlowFarneback(frames[0], frames[1], None, 0.5, 3, 15, 3, 5, 1.2, 0)
+    interior = gi._erode(wall, 8)
+    assert np.median(np.linalg.norm(flow[interior], axis=-1)) < 0.5  # what fooled co-motion
     index, info = gi.select_held_object(
-        [small, large], finger=finger, band=band, other_arm=None, flows=flows,
+        [wall, held], finger=finger, band=band, grays=frames, vision_config=CONFIG["vision"],
+    )
+    assert info["confidence"] == "high"
+    assert info["masks"][index][40, 40]
+    assert info["rigidity"][0] is None or info["rigidity"][0] < 0.6
+
+
+def test_candidate_without_evidence_is_not_eligible() -> None:
+    """A thin, plain candidate has no textured interior and no ring, so it cannot be judged or chosen."""
+
+    frames, finger, held, _, _ = _selection_scene()
+    plain = np.zeros(SEL_SHAPE, bool)
+    plain[46:, 50:54] = True  # a 4-px plain strip beside the fingers, e.g. a cable
+    for frame in frames:
+        frame[plain] = 90
+    band = gi.contact_band(finger, 3)
+    scores, counts = gi.rigidity_scores(
+        [plain, held], frames, [1, 2, 3], finger=finger, other_arm_seq=None,
         vision_config=CONFIG["vision"],
     )
-    assert info["confidence"] == "low"
+    assert scores[0] is None and counts[0] < CONFIG["vision"]["rigidity_min_evidence_px"]
+    index, info = gi.select_held_object(
+        [plain, held], finger=finger, band=band, grays=frames, vision_config=CONFIG["vision"],
+    )
+    assert info["masks"][index][40, 40]
+
+
+def test_rigidity_is_judged_after_the_arm_starts_moving() -> None:
+    """Right after the grasp the arm is still; the evidence comes later in the window."""
+
+    frames, finger, held, table, _ = _selection_scene(n_frames=10)
+    still = [frames[0]] * 5 + frames[1:6]  # 5 still frames, then the pan starts
+    band = gi.contact_band(finger, 3)
+    index, info = gi.select_held_object(
+        [table, held], finger=finger, band=band, grays=still, vision_config=CONFIG["vision"],
+    )
+    assert min(info["informative_frames"]) >= 5
+    assert info["confidence"] == "high" and info["masks"][index][40, 40]
+
+
+def test_selection_without_background_change_falls_back_to_contact() -> None:
+    frames, finger, _, _, _ = _selection_scene()
+    band = gi.contact_band(finger, 3)
+    small = np.zeros(SEL_SHAPE, bool)
+    small[41:45, 46:52] = True
+    large = np.zeros(SEL_SHAPE, bool)
+    large[33:45, 33:47] = True
+    index, info = gi.select_held_object(
+        [small, large], finger=finger, band=band, grays=[frames[0]] * 6,
+        vision_config=CONFIG["vision"],
+    )
+    assert info["confidence"] == "low" and info["informative_frames"] == []
     assert info["masks"][index][35, 40]
 
 
 def test_static_arm_fallback_prefers_fingertip_contact() -> None:
-    """Without background motion, a table object touching the side of the fingers must not win."""
+    """Without background change, a table object touching the side of the fingers must not win."""
 
-    shape = (60, 80)
-    finger = np.zeros(shape, bool)
-    finger[45:, 30:50] = True
+    frames, finger, _, _, _ = _selection_scene()
     band = gi.contact_band(finger, 3)
-    at_tips = np.zeros(shape, bool)
+    at_tips = np.zeros(SEL_SHAPE, bool)
     at_tips[38:45, 36:44] = True
-    beside = np.zeros(shape, bool)
+    beside = np.zeros(SEL_SHAPE, bool)
     beside[40:60, 22:30] = True  # larger contact, but along the side of the fingers
-    flows = [_flow(shape, (0.0, 0.0)) for _ in range(5)]
     assert (beside & band).sum() > (at_tips & band).sum()
     index, info = gi.select_held_object(
-        [beside, at_tips], finger=finger, band=band, other_arm=None, flows=flows,
+        [beside, at_tips], finger=finger, band=band, grays=[frames[0]] * 6,
         vision_config=CONFIG["vision"], tip=gi.tip_band(band, "bottom"),
     )
     assert info["confidence"] == "low"
@@ -369,11 +439,14 @@ def _noise_patch(rng, height, width, channel):
     return patch
 
 
+FINGER_TEX = np.random.default_rng(7).integers(15, 65, (H - 95, 31)).astype(np.uint8)
+
+
 def _write_scene(directory: Path, fps: float = 10.0, duration: float = 5.0) -> list[CameraFrameRef]:
     rng = np.random.default_rng(0)
     texture = cv2.GaussianBlur(rng.uniform(110, 230, (H, W + 400)).astype(np.float32), (0, 0), 2.0)
     texture = np.clip(texture, 110, 230).astype(np.uint8)
-    finger_tex = rng.integers(15, 65, (H - 95, 31)).astype(np.uint8)
+    finger_tex = FINGER_TEX
     obj = _noise_patch(rng, 20, 13, channel=2)
     decoy = _noise_patch(rng, 30, 10, channel=1)
     frames = []
@@ -408,10 +481,54 @@ def _drop_bundle(tmp_path: Path):
     )
 
 
-def _grasp_config(tmp_path: Path | None = None) -> dict:
+def _calibration_episode(directory: Path, rng, n_frames=12, finger_at=None, held=None):
+    """Random scenes (a new one every frame) seen through a wrist camera with fixed fingers.
+
+    ``finger_at(aperture)`` gives the finger patch's column offset; ``held``
+    paints a fixed patch (an object held in every episode) on frames with
+    aperture below 0.7.
+    """
+
+    directory.mkdir(parents=True, exist_ok=True)
+    times = np.arange(n_frames) * 0.5
+    apertures = np.where(np.arange(n_frames) < n_frames // 2, 1.0, 0.5)
+    paths = []
+    for k, (t, aperture) in enumerate(zip(times, apertures)):
+        scene = cv2.GaussianBlur(rng.uniform(60, 240, (H, W)).astype(np.float32), (0, 0), 1.5)
+        image = cv2.cvtColor(scene.astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        x0 = 65 + (finger_at(aperture) if finger_at else 0)
+        image[95:, x0 : x0 + 31] = cv2.cvtColor(FINGER_TEX, cv2.COLOR_GRAY2BGR)
+        if held is not None and aperture < 0.7:
+            image[75:95, x0 + 9 : x0 + 22] = held
+        path = directory / f"{k:04d}.png"
+        cv2.imwrite(str(path), image)
+        paths.append(path)
+    return paths, list(times), list(times), list(apertures)
+
+
+def _build_calibration(tmp_path: Path, n_episodes=10, **scene):
+    from pathologist.metrics.wrist_finger_calibration import FingerCalibrator
+
+    rng = np.random.default_rng(3)
+    calibrator = FingerCalibrator(work_width=W, bin_width=0.1)
+    for e in range(n_episodes):
+        paths, times, ap_t, ap = _calibration_episode(tmp_path / f"ep{e}", rng, **scene.get("episode", {}))
+        calibrator.add_episode(paths, times, ap_t, ap, exclude=scene.get("exclude", ()))
+    return calibrator.finish("left_wrist", min_episodes=scene.get("min_episodes", 8))
+
+
+def _grasp_config(tmp_path: Path | None = None, calibration_dir: Path | None = None) -> dict:
     vision = {"backend": "color_test", "work_width": 160}
     if tmp_path is not None:
         vision["cache_dir"] = str(tmp_path / "cache")
+    calibration_dir = calibration_dir or tmp_path
+    if calibration_dir is not None:
+        path = calibration_dir / "left_wrist_fingers.npz"
+        if not path.exists():
+            _build_calibration(calibration_dir / "calib").save(path)
+        vision["finger_calibration"] = {"left_wrist": str(path)}
+    else:
+        vision["finger_fallback"] = "segmented"
     return {"metrics": {"grasp_integrity": {"enabled": True, "vision": vision}}}
 
 
@@ -421,7 +538,7 @@ def _metric(bundle, metric_class, config):
 
 def test_end_to_end_drop_is_localized(tmp_path: Path) -> None:
     bundle = _drop_bundle(tmp_path)
-    config = _grasp_config()
+    config = _grasp_config(calibration_dir=tmp_path)
     attach = _metric(bundle, gi.GraspAttachLossMetric, config)
     gap = _metric(bundle, gi.GraspObjectGapMetric, config)
     rel = _metric(bundle, gi.GraspRelativeMotionMetric, config)
@@ -430,10 +547,13 @@ def test_end_to_end_drop_is_localized(tmp_path: Path) -> None:
     window = attach.metadata["hold_windows"]["left"][0]
     assert window["vision_status"] == "ok"
     info = window["vision_info"]
+    assert info["finger_source"] == "calibration"
+    assert info["finger_bin"] == pytest.approx(0.5)  # hold aperture 0.5
     assert info["confidence"] == "high"
     assert info["n_kept"] == 2  # both touch the fingers when the grasp settles
-    assert min(info["comotion"]) < 0.3 < 0.9 < max(info["comotion"])
-    assert SEGMENTER.tracked == "_object_mask"  # selection picked the co-moving object
+    assert min(info["rigidity"]) < 0.5
+    assert max(info["rigidity"]) > 0.95
+    assert SEGMENTER.tracked == "_object_mask"  # selection picked the rigid object
 
     def values(result, lo, hi):
         return [s.value for s in result.samples if lo <= s.timestamp_sec < hi]
@@ -460,12 +580,13 @@ def test_window_cache_round_trip(tmp_path: Path) -> None:
     assert list((tmp_path / "cache" / "left_wrist").glob("*.json"))
     gi._ANALYSIS_CACHE.clear()
     second = _metric(bundle, gi.GraspAttachLossMetric, _grasp_config(tmp_path))
+    assert second.metadata["hold_windows"]["left"][0]["vision_status"] == "ok"
     assert [s.value for s in first.samples] == [s.value for s in second.samples]
 
 
 def test_engine_integration_and_ecod(tmp_path: Path) -> None:
     bundle = _drop_bundle(tmp_path)
-    config = _grasp_config()
+    config = _grasp_config(calibration_dir=tmp_path)
     config["surprise"] = {"source_metrics": list(gi.SIGNAL_NAMES)}
     profile = MetricEngine(config=config).compute(bundle)
     names = {metric.name for metric in profile.metrics}
@@ -474,6 +595,87 @@ def test_engine_integration_and_ecod(tmp_path: Path) -> None:
     assert aggregate.samples
     peak = max(aggregate.samples, key=lambda s: s.value)
     assert DROP_T - 0.2 <= peak.timestamp_sec <= DROP_T + 0.5
+
+
+# ---------------------------------------------------------------------------
+# 3b. Finger calibration
+# ---------------------------------------------------------------------------
+
+
+def _patch_mask(x0):
+    mask = np.zeros((H, W), bool)
+    mask[95:, x0 : x0 + 31] = True
+    return mask
+
+
+def test_calibration_recovers_aperture_dependent_fingers(tmp_path: Path) -> None:
+    # Fingers sit 10 px further right when half closed (a stand-in for closing).
+    calibration = _build_calibration(
+        tmp_path, episode={"finger_at": lambda a: 0 if a > 0.7 else 10}
+    )
+    assert sorted(calibration.centers.tolist()) == [0.5, 1.0]
+    for aperture, x0 in ((0.97, 65), (0.52, 75)):
+        mask, center, distance = calibration.mask_for(aperture)
+        assert gi._mask_iou(mask, _patch_mask(x0)) > 0.9
+        assert distance < 0.05
+    # Nearest bin when the hold aperture was never seen empty.
+    _, center, distance = calibration.mask_for(0.2)
+    assert center == pytest.approx(0.5) and distance == pytest.approx(0.3)
+
+
+def test_calibration_round_trips_and_needs_enough_episodes(tmp_path: Path) -> None:
+    from pathologist.metrics.wrist_finger_calibration import FingerCalibration
+
+    calibration = _build_calibration(tmp_path / "a")
+    path = calibration.save(tmp_path / "c.npz")
+    loaded = FingerCalibration.load(path)
+    assert loaded.digest() == calibration.digest()
+    assert loaded.work_shape == (H, W)
+    with pytest.raises(ValueError, match="only 3 episodes"):
+        _build_calibration(tmp_path / "b", n_episodes=3)
+
+
+def test_calibration_excludes_held_objects(tmp_path: Path) -> None:
+    """An object held in every episode is rigid with the camera too; hold frames must be left out."""
+
+    held = np.full((20, 13, 3), (0, 0, 200), np.uint8)
+    polluted = _build_calibration(tmp_path / "p", episode={"held": held})
+    mask, _, _ = polluted.mask_for(0.5)
+    assert mask[85, 80]  # the held object was absorbed into the "fingers"
+    clean = _build_calibration(tmp_path / "c", episode={"held": held}, exclude=[(2.9, 100.0)])
+    mask, center, _ = clean.mask_for(0.5)
+    assert center == pytest.approx(1.0)  # only open frames remain
+    assert not mask[85, 80] and gi._mask_iou(mask, _patch_mask(65)) > 0.9
+
+
+def test_missing_finger_calibration_skips_vision_but_keeps_telemetry(tmp_path: Path) -> None:
+    bundle = _drop_bundle(tmp_path)
+    config = {"metrics": {"grasp_integrity": {"enabled": True, "vision": {"backend": "color_test", "work_width": 160}}}}
+    attach = _metric(bundle, gi.GraspAttachLossMetric, config)
+    window = attach.metadata["hold_windows"]["left"][0]
+    assert window["vision_status"] == "no_finger_calibration"
+    collapse = _metric(bundle, gi.GraspApertureCollapseMetric, config)
+    assert collapse.metadata["available"] is True
+
+
+def test_calibration_inputs_exclude_hold_windows(tmp_path: Path) -> None:
+    bundle = _drop_bundle(tmp_path)
+    paths, times, _, _, exclude = gi.calibration_inputs(bundle, {"enabled": True}, "left")
+    assert len(paths) == len(times) == 50
+    assert len(exclude) == 1
+    start, end = exclude[0]
+    assert start == pytest.approx(0.3 - 0.5) and end == pytest.approx(4.0 + 0.5, abs=0.03)
+
+
+def test_overlay_is_written(tmp_path: Path) -> None:
+    bundle = _drop_bundle(tmp_path)
+    config = _grasp_config(calibration_dir=tmp_path)
+    config["metrics"]["grasp_integrity"]["vision"]["debug_dir"] = str(tmp_path / "overlays")
+    _metric(bundle, gi.GraspAttachLossMetric, config)
+    written = list((tmp_path / "overlays" / "left_wrist").glob("*_pick*_high.jpg"))
+    assert len(written) == 1
+    image = cv2.imread(str(written[0]))
+    assert image.shape[1] == 2 * W  # settle frame | later frame
 
 
 # ---------------------------------------------------------------------------

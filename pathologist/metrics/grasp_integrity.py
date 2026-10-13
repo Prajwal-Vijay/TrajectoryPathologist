@@ -10,10 +10,17 @@ Per arm, independently:
    ends as soon as the command starts to open. The measured aperture is never
    thresholded to decide "grasping", because a wide object stops the fingers at,
    say, 0.6 while the grasp is firm.
-2. In that arm's wrist camera the fingers are rigid with the camera, so inside a
-   hold window they occupy a fixed image region. The held object is the
-   segmented region that touches a thin band around the fingers and moves with
-   them while the background moves with the arm.
+2. In that arm's wrist camera the fingers are rigid with the camera, so their
+   image region depends only on the aperture. It is calibrated once per camera
+   from many episodes (:mod:`pathologist.metrics.wrist_finger_calibration`):
+   finger pixels are the ones whose appearance does not change across scenes.
+   The held object is also rigid with the camera, so during the hold it stays
+   on the same pixels while the arm moves and the background changes. It is the
+   candidate segment that touches a thin band around the fingers and whose
+   pixels keep their appearance once the background has visibly changed
+   ("rigidity"). Rigidity is measured only on pixels that carry evidence -
+   textured interior and inner boundary - because a plain, untextured surface
+   looks unchanged whether or not it moves.
 3. Four signals, all large on a slip or drop and near zero during a normal hold:
 
    - ``grasp_attach_loss``: 1 - (object/finger-band contact) / (contact at
@@ -64,7 +71,7 @@ SIGNAL_NAMES = (
     "grasp_aperture_collapse",
 )
 VISION_SIGNALS = SIGNAL_NAMES[:3]
-WINDOW_CACHE_VERSION = 1
+WINDOW_CACHE_VERSION = 2
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "enabled": False,
@@ -94,23 +101,45 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "enabled": True,
         "backend": "grounded_sam2",
         "work_width": 320,
+        # Finger mask sources, in order: a fixed mask image per camera
+        # (finger_masks), else a calibration file per camera (finger_calibration,
+        # built by scripts/check_grasp_integrity.py), else finger_fallback:
+        # "none" (window skipped, status no_finger_calibration) or "segmented"
+        # (text-prompted Grounding DINO + SAM2; unreliable in wrist views).
         "finger_masks": {},
+        "finger_calibration": {},
+        "finger_fallback": "none",
         "finger_entry_edge": "bottom",
         "finger_edge_fraction": 0.05,
         "band_radius_frac": 0.02,
         "num_positive_points": 5,
         "object_text_prompt": "object. item. tool.",
         "min_area_frac": 0.001,
-        "max_area_frac": 0.3,
+        # A held object right in front of the wrist camera can fill half the view.
+        "max_area_frac": 0.6,
         "max_finger_overlap": 0.2,
         "max_other_arm_overlap": 0.5,
         "min_contact_px": 6,
         "merge_iou": 0.7,
-        "comotion_sec": 0.5,
-        "min_background_flow_frac": 0.002,
-        "min_informative_pairs": 3,
-        "min_comotion": 0.5,
-        "comotion_tie_margin": 0.1,
+        # Held-object selection by rigidity (see select_held_object).
+        "rigidity_blur_sigma": 1.0,
+        # A pixel "kept its appearance" if it changed by at most this many grey
+        # levels: above sensor/JPEG noise after the blur, well below what a moved
+        # textured pixel changes by.
+        "rigidity_tolerance": 10.0,
+        # "Textured" = local (7x7) grey-level std at least this. After a move, a
+        # non-rigid pixel is roughly a fresh draw from its neighbourhood, so it
+        # stays within the tolerance with probability <= 1 - 2(1 - Phi(10 / (12
+        # sqrt 2))) = 0.44, versus ~1 for a rigid pixel.
+        "rigidity_min_contrast": 12.0,
+        "rigidity_ring_px": 3,  # inner-boundary ring width
+        "rigidity_far_px": 5,  # ring pixels this close to fingers/border carry no evidence
+        "rigidity_min_evidence_px": 15,
+        "informative_change_frac": 0.15,  # background visibly changed in this frame
+        "max_selection_frames": 6,
+        "min_informative_frames": 2,
+        "min_rigidity": 0.6,
+        "rigidity_tie_margin": 0.1,
         # Half the Farneback window (15 px): flow closer than this to another
         # region's boundary is contaminated by that region's motion.
         "flow_boundary_px": 7.5,
@@ -266,6 +295,7 @@ def resolve_config(raw: dict[str, Any] | None) -> dict[str, Any]:
             if isinstance(value, dict) and isinstance(out.get(key), dict) and key not in {
                 "arms",
                 "finger_masks",
+                "finger_calibration",
                 "empty_closed",
             }:
                 out[key] = merge(out[key], value)
@@ -565,29 +595,178 @@ def _interior(mask: Any, others: Any, distance_px: float) -> Any:
 # --------------------------------------------------------------------------
 
 
+def _blurred(gray: Any, sigma: float) -> Any:
+    import cv2
+    import numpy as np
+
+    image = np.asarray(gray, dtype=np.float32)
+    return cv2.GaussianBlur(image, (0, 0), sigma) if sigma > 0 else image
+
+
+def _local_contrast(image: Any, size: int = 7) -> Any:
+    """Grey-level standard deviation in a ``size`` x ``size`` window."""
+
+    import cv2
+    import numpy as np
+
+    image = np.asarray(image, dtype=np.float32)
+    mean = cv2.boxFilter(image, -1, (size, size), borderType=cv2.BORDER_REFLECT)
+    mean_sq = cv2.boxFilter(image * image, -1, (size, size), borderType=cv2.BORDER_REFLECT)
+    return np.sqrt(np.maximum(mean_sq - mean * mean, 0.0))
+
+
+def _erode(mask: Any, radius: int) -> Any:
+    import cv2
+    import numpy as np
+
+    mask = np.asarray(mask, dtype=bool)
+    if radius <= 0:
+        return mask
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+    return cv2.erode(mask.astype(np.uint8), kernel, borderType=cv2.BORDER_CONSTANT, borderValue=0).astype(bool)
+
+
+def evidence_pixels(mask: Any, finger: Any, contrast: Any, vision_config: dict[str, Any]) -> Any:
+    """Pixels of a candidate whose appearance would change if the candidate moved.
+
+    Two kinds: textured interior pixels, and an inner ring along the
+    candidate's boundary. A plain interior carries no evidence (a uniform wall
+    looks the same after the camera pans), but the region's boundary does,
+    because it shifts in the image unless the region is rigid with the camera.
+    Ring pixels next to the fingers or the image border are excluded: those
+    boundaries are fixed for every region.
+    """
+
+    import cv2
+    import numpy as np
+
+    mask = np.asarray(mask, dtype=bool)
+    finger = np.asarray(finger, dtype=bool)
+    min_contrast = float(vision_config["rigidity_min_contrast"])
+    ring_px = int(vision_config["rigidity_ring_px"])
+    far_px = float(vision_config["rigidity_far_px"])
+    # Start 3 px inside the boundary (interior) / 2 px (ring) so the blur does not
+    # mix in the neighbouring region, whose change says nothing about this one.
+    interior = _erode(mask, 3)
+    textured = interior & (np.asarray(contrast) >= min_contrast)
+    ring = _erode(mask, 2) & ~_erode(mask, 2 + ring_px)
+    fixed = finger.copy()
+    fixed[0, :] = fixed[-1, :] = fixed[:, 0] = fixed[:, -1] = True
+    distance = cv2.distanceTransform((~fixed).astype(np.uint8), cv2.DIST_L2, 5)
+    return textured | (ring & (distance >= far_px))
+
+
+def informative_frames(
+    grays: list[Any],
+    finger: Any,
+    other_arm_seq: list[Any] | None,
+    vision_config: dict[str, Any],
+) -> list[int]:
+    """Frames (after frame 0) in which the background has visibly changed.
+
+    Only such frames can tell a rigid region from a static one. A frame counts
+    when at least ``informative_change_frac`` of the textured non-finger pixels
+    differ from frame 0 by more than the tolerance. The held object itself is
+    among those pixels and does not change, so the fraction is diluted by the
+    object's share of the textured scene, not inflated by it.
+    """
+
+    import cv2
+    import numpy as np
+
+    if len(grays) < 2:
+        return []
+    sigma = float(vision_config["rigidity_blur_sigma"])
+    tolerance = float(vision_config["rigidity_tolerance"])
+    reference = _blurred(grays[0], sigma)
+    kernel = np.ones((7, 7), np.uint8)
+    near_finger = cv2.dilate(np.asarray(finger, dtype=np.uint8), kernel).astype(bool)
+    scene = ~near_finger & (_local_contrast(reference) >= float(vision_config["rigidity_min_contrast"]))
+    minimum = int(vision_config["rigidity_min_evidence_px"])
+    picks: list[int] = []
+    for k in range(1, len(grays)):
+        pixels = scene
+        if other_arm_seq is not None and other_arm_seq[k] is not None:
+            pixels = scene & ~np.asarray(other_arm_seq[k], dtype=bool)
+        if int(pixels.sum()) < minimum:
+            continue
+        changed = np.abs(_blurred(grays[k], sigma) - reference) > tolerance
+        if float(changed[pixels].mean()) >= float(vision_config["informative_change_frac"]):
+            picks.append(k)
+            if len(picks) >= int(vision_config["max_selection_frames"]):
+                break
+    return picks
+
+
+def rigidity_scores(
+    candidates: list[Any],
+    grays: list[Any],
+    frames: list[int],
+    *,
+    finger: Any,
+    other_arm_seq: list[Any] | None,
+    vision_config: dict[str, Any],
+) -> tuple[list[float | None], list[int]]:
+    """Per candidate: median over ``frames`` of the share of its evidence pixels unchanged since frame 0.
+
+    Returns (scores, evidence pixel counts). A score is None when the candidate
+    has too few evidence pixels to be judged.
+    """
+
+    import numpy as np
+
+    sigma = float(vision_config["rigidity_blur_sigma"])
+    tolerance = float(vision_config["rigidity_tolerance"])
+    minimum = int(vision_config["rigidity_min_evidence_px"])
+    reference = _blurred(grays[0], sigma)
+    contrast = _local_contrast(reference)
+    unchanged = {
+        k: np.abs(_blurred(grays[k], sigma) - reference) <= tolerance for k in frames
+    }
+    scores: list[float | None] = []
+    counts: list[int] = []
+    for mask in candidates:
+        evidence = evidence_pixels(mask, finger, contrast, vision_config)
+        counts.append(int(evidence.sum()))
+        per_frame = []
+        for k in frames:
+            pixels = evidence
+            if other_arm_seq is not None and other_arm_seq[k] is not None:
+                pixels = evidence & ~np.asarray(other_arm_seq[k], dtype=bool)
+            if int(pixels.sum()) >= minimum:
+                per_frame.append(float(unchanged[k][pixels].mean()))
+        scores.append(float(np.median(per_frame)) if per_frame else None)
+    return scores, counts
+
+
 def select_held_object(
     candidates: list[Any],
     *,
     finger: Any,
     band: Any,
-    other_arm: Any,
-    flows: list[Any],
+    grays: list[Any],
     vision_config: dict[str, Any],
+    other_arm_seq: list[Any] | None = None,
     tip: Any | None = None,
 ) -> tuple[int | None, dict[str, Any]]:
-    """Pick the candidate that touches the fingers and moves with them.
+    """Pick the candidate that touches the fingers and is rigid with the camera.
 
-    ``flows`` are the optical-flow fields for the first ``comotion_sec`` of the
-    window (frame k to k+1). Returns the chosen index (into the filtered,
-    merged list stored in ``info['masks']``) or None.
+    ``grays`` are the window's work-resolution grey frames, frame 0 at settle.
+    The held object keeps its pixels and appearance while the background
+    changes; a table object or wall next to the fingers does not. Rigidity is
+    judged on frames anywhere in the window where the background has visibly
+    changed, because right after the grasp the arm is usually still and every
+    region looks static. Returns the chosen index (into the filtered, merged
+    list stored in ``info['masks']``) or None.
     """
 
     import numpy as np
 
     finger = np.asarray(finger, dtype=bool)
     band = np.asarray(band, dtype=bool)
+    first_other = other_arm_seq[0] if other_arm_seq else None
     other_arm = (
-        np.zeros_like(finger) if other_arm is None else np.asarray(other_arm, dtype=bool)
+        np.zeros_like(finger) if first_other is None else np.asarray(first_other, dtype=bool)
     )
     image_area = float(finger.size)
     kept: list[Any] = []
@@ -633,65 +812,41 @@ def select_held_object(
         info["confidence"] = "none"
         return None, info
 
-    # Rank by contact with the fingertip end of the band (all of the band if not given).
+    # Contact with the fingertip end of the band (all of the band if not given).
     tip = band if tip is None else np.asarray(tip, dtype=bool)
     contacts = [int((mask & tip).sum()) for mask in kept]
-    foreground = finger | other_arm
-    for mask in kept:
-        foreground = foreground | mask
-    background = ~foreground
-    diagonal = math.hypot(*finger.shape)
-    min_bg = float(vision_config["min_background_flow_frac"]) * diagonal
-    # Measure every region on its interior, away from motion boundaries.
-    edge = float(vision_config["flow_boundary_px"])
-    finger_core = _interior(finger, ~finger, edge)
-    background_core = _interior(background, foreground, edge)
-    candidate_cores = [_interior(mask, finger | other_arm, edge) for mask in kept]
-    ratios: list[list[float]] = [[] for _ in kept]
-    informative_pairs = 0
-    for flow in flows:
-        finger_flow = _median_flow(flow, finger_core)
-        bg_flow = _median_flow(flow, background_core)
-        if finger_flow is None or bg_flow is None:
-            continue
-        bg_speed = float(np.linalg.norm(bg_flow - finger_flow))
-        if bg_speed <= min_bg:
-            continue
-        informative_pairs += 1
-        for index, core in enumerate(candidate_cores):
-            cand_flow = _median_flow(flow, core)
-            if cand_flow is None:
-                continue
-            ratios[index].append(float(np.linalg.norm(cand_flow - finger_flow)) / bg_speed)
-
-    comotion = [
-        float(np.clip(1.0 - np.median(r), 0.0, 1.0)) if r else None for r in ratios
-    ]
+    frames = informative_frames(grays, finger, other_arm_seq, vision_config)
     info["contacts"] = contacts
-    info["comotion"] = comotion
-    info["informative_pairs"] = informative_pairs
-    if informative_pairs >= int(vision_config["min_informative_pairs"]):
+    info["informative_frames"] = frames
+    if len(frames) >= int(vision_config["min_informative_frames"]):
+        rigidity, evidence = rigidity_scores(
+            kept, grays, frames, finger=finger, other_arm_seq=other_arm_seq,
+            vision_config=vision_config,
+        )
+        info["rigidity"] = rigidity
+        info["evidence_px"] = evidence
         eligible = [
             index
-            for index, score in enumerate(comotion)
-            if score is not None and score >= float(vision_config["min_comotion"])
+            for index, score in enumerate(rigidity)
+            if score is not None and score >= float(vision_config["min_rigidity"])
         ]
         if not eligible:
             info["confidence"] = "none"
             return None, info
-        # Moving with the fingers is the defining property of the held object, so
-        # rank by co-motion; contact only breaks near-ties. (Ranking by contact
-        # first lets a large table object with partial co-motion win.)
-        best = max(comotion[index] for index in eligible)
+        # Rigidity is the defining property of the held object, so rank by it;
+        # fingertip contact only breaks near-ties.
+        best = max(rigidity[index] for index in eligible)
         tied = [
             index
             for index in eligible
-            if comotion[index] >= best - float(vision_config["comotion_tie_margin"])
+            if rigidity[index] >= best - float(vision_config["rigidity_tie_margin"])
         ]
         chosen = max(tied, key=lambda index: contacts[index])
         info["confidence"] = "high"
         info["selected"] = chosen
         return chosen, info
+    # The background never changed visibly (arm still for the whole hold, or a
+    # plain backdrop): no evidence about rigidity, so fall back to fingertip contact.
     info["confidence"] = "low"
     chosen = int(np.argmax(contacts))
     info["selected"] = chosen
@@ -1270,6 +1425,8 @@ def _window_cache_path(
                 "window": [window.t_settle, window.t_open],
                 "vision": {k: v for k, v in vision_config.items() if k != "cache_dir"},
                 "backend": segmenter.identity(),
+                # Content, not just path: recalibrating must invalidate the cache.
+                "finger_calibration": _finger_calibration_digest(camera, vision_config),
             },
             sort_keys=True,
             default=str,
@@ -1286,7 +1443,6 @@ def _compute_window_vision(
     vision_config: dict[str, Any],
 ) -> WindowVision:
     import cv2
-    import numpy as np
 
     paths = [Path(f.image_path) for f in frames]
     times = [float(f.timestamp_sec) for f in frames]
@@ -1310,23 +1466,10 @@ def _compute_window_vision(
         for k in range(len(grays) - 1)
     ]
 
-    # Fingers: a configured static mask, else segmented at the start of this window.
     first_rgb = cv2.cvtColor(first_bgr, cv2.COLOR_BGR2RGB)
-    static_path = (vision_config.get("finger_masks") or {}).get(camera)
-    if static_path:
-        static = cv2.imread(str(static_path), cv2.IMREAD_GRAYSCALE)
-        finger_full = None if static is None else static > 127
-        finger_source = "static"
-    else:
-        finger_full = segmenter.finger_mask(
-            first_rgb,
-            str(vision_config["finger_entry_edge"]),
-            float(vision_config["finger_edge_fraction"]),
-        )
-        finger_source = "segmented"
-    if finger_full is None or not np.asarray(finger_full).any():
-        return WindowVision(status="no_finger_mask", info={"finger_source": finger_source})
-    finger = _resize_mask(finger_full, work_shape)
+    finger, finger_info = _finger_for_window(first_rgb, work_shape, camera, window, segmenter, vision_config)
+    if finger is None:
+        return WindowVision(status=str(finger_info.pop("status")), info=finger_info)
     diagonal = math.hypot(work_h, work_w)
     band = contact_band(finger, max(1, int(round(float(vision_config["band_radius_frac"]) * diagonal))))
 
@@ -1342,21 +1485,20 @@ def _compute_window_vision(
         str(vision_config["object_text_prompt"]),
     )
     candidates = [_resize_mask(mask, work_shape) for mask in candidates_full]
-    comotion_frames = sum(1 for t in times if t <= times[0] + float(vision_config["comotion_sec"]))
     chosen, select_info = select_held_object(
         candidates,
         finger=finger,
         band=band,
         tip=tip_band(band, str(vision_config["finger_entry_edge"])),
-        other_arm=other_seq[0] if other_seq else None,
-        flows=flows[: max(0, comotion_frames - 1)],
+        other_arm_seq=other_seq,
+        grays=grays,
         vision_config=vision_config,
     )
     info = {key: value for key, value in select_info.items() if key != "masks"}
-    info.update({"finger_source": finger_source, "n_frames": len(frames)})
+    info.update({**finger_info, "n_frames": len(frames)})
     _write_init_overlay(
-        vision_config, camera, window, paths[0], work_shape, finger, band,
-        select_info["masks"], chosen,
+        vision_config, camera, window, paths, work_shape, finger, band,
+        select_info["masks"], chosen, info,
     )
     if chosen is None:
         return WindowVision(status="no_object_found", info=info)
@@ -1388,18 +1530,164 @@ def _compute_window_vision(
     return result
 
 
+_CALIBRATION_CACHE: dict[tuple[str, float], Any] = {}
+
+
+def _load_finger_calibration(path: str | Path) -> Any:
+    """Load a calibration file, cached by path and modification time."""
+
+    from pathologist.metrics.wrist_finger_calibration import FingerCalibration
+
+    resolved = Path(str(path)).expanduser()
+    key = (str(resolved), resolved.stat().st_mtime)
+    if key not in _CALIBRATION_CACHE:
+        _CALIBRATION_CACHE[key] = FingerCalibration.load(resolved)
+    return _CALIBRATION_CACHE[key]
+
+
+def _finger_for_window(
+    first_rgb: Any,
+    work_shape: tuple[int, int],
+    camera: str,
+    window: HoldWindow,
+    segmenter: GraspSegmenter,
+    vision_config: dict[str, Any],
+) -> tuple[Any | None, dict[str, Any]]:
+    """This arm's finger mask at work resolution, and where it came from.
+
+    On failure returns (None, info) with ``info['status']`` set.
+    """
+
+    import cv2
+    import numpy as np
+
+    static_path = (vision_config.get("finger_masks") or {}).get(camera)
+    if static_path:
+        static = cv2.imread(str(static_path), cv2.IMREAD_GRAYSCALE)
+        if static is None or not (static > 127).any():
+            return None, {"status": "no_finger_mask", "finger_source": "static"}
+        return _resize_mask(static > 127, work_shape), {"finger_source": "static"}
+
+    calibration_path = (vision_config.get("finger_calibration") or {}).get(camera)
+    if calibration_path:
+        try:
+            calibration = _load_finger_calibration(calibration_path)
+        except (OSError, ValueError, KeyError) as exc:
+            return None, {
+                "status": "bad_finger_calibration",
+                "finger_source": "calibration",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        # The fingers sit where the measured aperture holds them during the grasp.
+        mask, center, distance = calibration.mask_for(window.state_plateau)
+        return _resize_mask(mask, work_shape), {
+            "finger_source": "calibration",
+            "finger_bin": center,
+            "finger_bin_distance": round(distance, 4),
+        }
+
+    if str(vision_config.get("finger_fallback", "none")) == "segmented":
+        finger_full = segmenter.finger_mask(
+            first_rgb,
+            str(vision_config["finger_entry_edge"]),
+            float(vision_config["finger_edge_fraction"]),
+        )
+        if finger_full is None or not np.asarray(finger_full).any():
+            return None, {"status": "no_finger_mask", "finger_source": "segmented"}
+        return _resize_mask(finger_full, work_shape), {"finger_source": "segmented"}
+
+    return None, {"status": "no_finger_calibration", "finger_source": None}
+
+
+def _finger_calibration_digest(camera: str, vision_config: dict[str, Any]) -> str | None:
+    path = (vision_config.get("finger_calibration") or {}).get(camera)
+    if not path:
+        return None
+    try:
+        return _load_finger_calibration(path).digest()
+    except (OSError, ValueError, KeyError):
+        return "unreadable"
+
+
+def calibration_inputs(
+    bundle: TrajectoryBundle,
+    config: dict[str, Any],
+    arm: str,
+    exclude_margin_sec: float = 0.5,
+) -> tuple[list[Path], list[float], list[float], list[float], list[tuple[float, float]]] | None:
+    """Inputs for :class:`FingerCalibrator.add_episode` for one arm of one bundle.
+
+    Returns (frame paths, frame times, aperture times, measured apertures,
+    excluded intervals), or None if the arm or its camera is missing. Hold
+    windows, widened by ``exclude_margin_sec`` on both sides, are excluded so a
+    held object is never averaged into the gripper.
+    """
+
+    import numpy as np
+
+    config = resolve_config(config)
+    arms_config = config["arms"]
+    if arm not in arms_config:
+        return None
+    component = int(config["component_index"])
+    cmd_t, cmd_series, error = per_arm_series(
+        bundle, config["command_stream"], config["command_key"], arms_config, component
+    )
+    if error or arm not in cmd_series:
+        return None
+    state_t, state_series, error = per_arm_series(
+        bundle, config["state_stream"], config["state_key"], arms_config, component
+    )
+    if error or arm not in state_series:
+        return None
+    camera = str(arms_config[arm].get("camera", ""))
+    frames = sorted(
+        (f for f in bundle.camera_frames if f.camera_name == camera),
+        key=lambda f: (float(f.timestamp_sec), int(f.frame_index or 0)),
+    )
+    if not frames:
+        return None
+    grid = np.asarray(state_t)
+    cmd = np.interp(grid, np.asarray(cmd_t), np.asarray(cmd_series[arm]))
+    windows = find_hold_windows(
+        grid,
+        cmd,
+        state_series[arm],
+        arm=arm,
+        empty_closed=float((config.get("empty_closed") or {}).get(arm, 0.0)),
+        config=config,
+    )
+    exclude = [(w.t_close - exclude_margin_sec, w.t_open + exclude_margin_sec) for w in windows]
+    return (
+        [Path(f.image_path) for f in frames],
+        [float(f.timestamp_sec) for f in frames],
+        [float(v) for v in state_t],
+        [float(v) for v in state_series[arm]],
+        exclude,
+    )
+
+
 def _write_init_overlay(
     vision_config: dict[str, Any],
     camera: str,
     window: HoldWindow,
-    first_path: Path,
+    paths: list[Path],
     work_shape: tuple[int, int],
     finger: Any,
     band: Any,
     candidates: list[Any],
     chosen: int | None,
+    info: dict[str, Any],
 ) -> None:
-    """Fingers (blue), band (yellow), rejected candidates (red), chosen object (green)."""
+    """Two panels for manual QA of held-object initialization.
+
+    Left, the settle frame: fingers (blue), contact band (yellow), candidates
+    that touched the band but were not chosen (red), chosen object (green), each
+    candidate labelled with its rigidity. Right, the last frame used to judge
+    rigidity, with the finger (blue) and chosen-object (green) outlines from the
+    settle frame: if the choice is right, the object is still inside the green
+    outline there while the background has moved.
+    """
 
     debug_dir = vision_config.get("debug_dir")
     if not debug_dir:
@@ -1407,20 +1695,68 @@ def _write_init_overlay(
     import cv2
     import numpy as np
 
-    image = cv2.resize(cv2.imread(str(first_path)), (work_shape[1], work_shape[0]))
+    height, width = work_shape
+
+    def load(path: Path) -> Any:
+        return cv2.resize(cv2.imread(str(path)), (width, height))
+
+    image = load(paths[0])
     overlay = image.copy()
     overlay[finger] = (255, 0, 0)
     overlay[band] = (0, 255, 255)
     for index, mask in enumerate(candidates):
         overlay[mask] = (0, 200, 0) if index == chosen else (0, 0, 255)
-    blended = cv2.addWeighted(image, 0.5, overlay, 0.5, 0.0)
+    # Light fill so the scene stays visible, plus solid outlines: a tint alone is
+    # ambiguous on red or green objects.
+    left = cv2.addWeighted(image, 0.65, overlay, 0.35, 0.0)
+    order = [i for i in range(len(candidates)) if i != chosen] + ([chosen] if chosen is not None else [])
+    for index in order:
+        colour = (0, 200, 0) if index == chosen else (0, 0, 255)
+        contours, _ = cv2.findContours(candidates[index].astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cv2.drawContours(left, contours, -1, colour, 2 if index == chosen else 1)
+    rigidity = info.get("rigidity") or [None] * len(candidates)
+    used_rows: list[int] = []
+    for index, mask in enumerate(candidates):
+        ys, xs = np.nonzero(mask)
+        if len(xs) == 0:
+            continue
+        score = rigidity[index] if index < len(rigidity) else None
+        label = f"{index}:" + ("r=-" if score is None else f"r={score:.2f}")
+        y = max(10, int(ys.min()) - 2)
+        while any(abs(y - row) < 10 for row in used_rows):
+            y += 10
+        used_rows.append(y)
+        position = (max(0, int(xs.min())), min(height - 2, y))
+        colour = (0, 200, 0) if index == chosen else (0, 0, 255)
+        cv2.putText(left, label, position, cv2.FONT_HERSHEY_SIMPLEX, 0.33, (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.putText(left, label, position, cv2.FONT_HERSHEY_SIMPLEX, 0.33, colour, 1, cv2.LINE_AA)
+
+    frames = info.get("informative_frames") or []
+    later = int(frames[-1]) if frames else len(paths) - 1
+    right = load(paths[later])
+    outlines = [(finger, (255, 0, 0))]
+    if chosen is not None:
+        outlines.append((candidates[chosen], (0, 200, 0)))
+    for mask, colour in outlines:
+        contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cv2.drawContours(right, contours, -1, colour, 1)
+
+    confidence = str(info.get("confidence", "none"))
+    source = str(info.get("finger_source"))
+    if info.get("finger_bin") is not None:
+        source += f" a={window.state_plateau:.2f}->bin {float(info['finger_bin']):.2f}"
+    header = np.full((16, 2 * width, 3), 255, np.uint8)
+    text = f"conf={confidence} fingers={source} informative={len(frames)} | right: frame {later}"
+    cv2.putText(header, text, (3, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 0, 0), 1, cv2.LINE_AA)
+    panel = np.vstack([header, np.hstack([left, right])])
+
     status = "none" if chosen is None else f"pick{chosen}"
     out = Path(str(debug_dir)).expanduser() / camera
     out.mkdir(parents=True, exist_ok=True)
     # Frame caches are laid out <episode>/<camera>_<rate>/<frame>, so name by episode.
-    episode = Path(first_path).parent.parent.name
-    name = f"{episode}_{window.arm}_{window.t_settle:08.3f}_{status}.jpg"
-    cv2.imwrite(str(out / name), np.ascontiguousarray(blended))
+    episode = Path(paths[0]).parent.parent.name
+    name = f"{episode}_{window.arm}_{window.t_settle:08.3f}_{status}_{confidence}.jpg"
+    cv2.imwrite(str(out / name), np.ascontiguousarray(panel))
 
 
 def _other_arm_sequence(
