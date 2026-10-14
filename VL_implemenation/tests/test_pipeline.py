@@ -2,7 +2,17 @@ from pathlib import Path
 
 import pytest
 
-from VL_implemenation.abc_data import semantic_event_type
+from VL_implemenation.abc_data import (
+    classify_segment_annotation,
+    normalized_action_label,
+    semantic_event_type,
+)
+from VL_implemenation.category_protocol import (
+    assignments_by_bundle,
+    load_experiment_config,
+    load_segment_assignments,
+    render_category_prompt,
+)
 from VL_implemenation.evaluation import evaluate_localizations, score_row
 from VL_implemenation.mosaic import (
     build_mosaic_timeline,
@@ -24,6 +34,56 @@ from VL_implemenation.qwen_localizer import parse_localization_answer
 )
 def test_semantic_event_type(text: str, expected: str | None) -> None:
     assert semantic_event_type(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_label", "expected_category"),
+    [
+        (
+            "First fold the square sheet of paper in half.",
+            "fold",
+            "deformable_manipulation",
+        ),
+        ("Pick up the plug.", "pick up", "acquire_release"),
+        ("Take out the item from the bag.", "take out", "assembly_contact"),
+        (
+            "pass from the left arm to the right",
+            "pass/handoff",
+            "transport_reposition",
+        ),
+        ("Press the plug into the socket.", "press", "assembly_contact"),
+        ("reset both arms", "reset", "correction_failure_control"),
+    ],
+)
+def test_segment_annotation_taxonomy(
+    text: str,
+    expected_label: str,
+    expected_category: str,
+) -> None:
+    assert normalized_action_label(text) == expected_label
+    assert classify_segment_annotation(text) == (
+        expected_label,
+        expected_category,
+    )
+
+
+def test_category_experiment_freezes_all_assignments_and_prompts() -> None:
+    config = load_experiment_config()
+    rows = load_segment_assignments()
+    by_bundle = assignments_by_bundle(rows)
+
+    assert len(config["categories"]) == 7
+    assert len(rows) == 8045
+    assert len(by_bundle) == 280
+    assert len({row["normalized_label"] for row in rows}) == 62
+    for category in config["categories"]:
+        prompt = render_category_prompt(config, category)
+        assert prompt.startswith(
+            "Does this clip show the following type of robot action:"
+        )
+        assert prompt.endswith("Answer Yes or No.")
+        assert "not reaching" not in prompt.casefold()
+        assert "not carrying" not in prompt.casefold()
 
 
 def test_parser_strips_fences_clips_and_keeps_only_first_event() -> None:

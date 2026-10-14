@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 
 FRAME_TIMESTAMP_RE = re.compile(r"_t(\d+(?:\.\d+)?)")
+LEADING_ANNOTATION_MODIFIER_RE = re.compile(
+    r"^(?:(?:first|second|third|fourth|fifth|sixth|seventh|then|next|finally)\s+)+"
+)
+CATEGORY_MAPPING_PATH = Path(__file__).with_name(
+    "abc_segment_category_mapping.json"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,6 +68,67 @@ def semantic_event_type(annotation_text: str) -> str | None:
     if normalized.startswith("remove ") or normalized.startswith("take out "):
         return "removal"
     return None
+
+
+def normalized_action_label(annotation_text: str) -> str:
+    """Map an ABC free-text segment annotation to its fixed action head."""
+
+    normalized = " ".join(annotation_text.strip().casefold().split())
+    normalized = re.sub(r"^[^a-z]+", "", normalized)
+    normalized = LEADING_ANNOTATION_MODIFIER_RE.sub("", normalized)
+    if normalized.startswith("pick up"):
+        return "pick up"
+    if normalized.startswith("take out"):
+        return "take out"
+    if normalized.startswith("pass from"):
+        return "pass/handoff"
+    match = re.match(r"[a-z]+", normalized)
+    if match is None:
+        raise ValueError(
+            f"ABC segment annotation has no normalized action head: {annotation_text!r}"
+        )
+    return match.group(0)
+
+
+@lru_cache(maxsize=1)
+def action_label_categories() -> dict[str, str]:
+    """Return the validated one-to-one action-label/category lookup."""
+
+    payload = json.loads(CATEGORY_MAPPING_PATH.read_text(encoding="utf-8"))
+    categories = payload.get("categories")
+    if not isinstance(categories, dict):
+        raise ValueError(f"Invalid category mapping: {CATEGORY_MAPPING_PATH}")
+    output: dict[str, str] = {}
+    for category, details in categories.items():
+        if not isinstance(details, dict) or not isinstance(
+            details.get("labels"), list
+        ):
+            raise ValueError(
+                f"Invalid category entry {category!r}: {CATEGORY_MAPPING_PATH}"
+            )
+        for label in details["labels"]:
+            if not isinstance(label, str) or not label:
+                raise ValueError(
+                    f"Invalid action label in {category!r}: {label!r}"
+                )
+            if label in output:
+                raise ValueError(
+                    f"Action label {label!r} appears in multiple categories"
+                )
+            output[label] = str(category)
+    return output
+
+
+def classify_segment_annotation(annotation_text: str) -> tuple[str, str]:
+    """Return the fixed normalized action label and broad category."""
+
+    label = normalized_action_label(annotation_text)
+    category = action_label_categories().get(label)
+    if category is None:
+        raise ValueError(
+            f"Unmapped ABC action label {label!r} from {annotation_text!r}"
+        )
+    return label, category
 
 
 def instruction_event_type(instruction: str) -> str | None:

@@ -30,12 +30,14 @@ from pathologist.metrics.signals import (
 from pathologist.metrics.surprise import ECODSurpriseScorer, ecod_scores
 from pathologist.metrics.timing import TimestampRegularityMetric
 from pathologist.metrics.vision import VisualFlowMetric
+from pathologist.metrics.vlm_yesno import CachedVLMYesNoMetric
 
 __all__ = [
     "ActionDiscontinuityMetric",
     "ActionDistributionEntropyMetric",
     "ActionRangeSaturationMetric",
     "AudioSpectralFluxMetric",
+    "CachedVLMYesNoMetric",
     "EefAngularJerkMetric",
     "EefAngularVelocitySpikeMetric",
     "EefLinearVelocitySpikeMetric",

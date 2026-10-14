@@ -1,0 +1,104 @@
+{
+  "taxonomy_version": 1,
+  "normalization": "Lowercase normalized leading action head from the ABC-Bot segment annotation.",
+  "assignment_rule": "Every normalized label is assigned to exactly one category.",
+  "categories": {
+    "acquire_release": {
+      "description": "Acquire control of an object or relinquish it at a destination.",
+      "labels": [
+        "pick up",
+        "grab",
+        "grap",
+        "grasp",
+        "hold",
+        "lift",
+        "place",
+        "put",
+        "set",
+        "release"
+      ]
+    },
+    "transport_reposition": {
+      "description": "Move, transfer, locate, load, unload, or store an object without fixture engagement being the defining action.",
+      "labels": [
+        "move",
+        "position",
+        "reach",
+        "pass/handoff",
+        "pass",
+        "arm",
+        "locate",
+        "load",
+        "unload",
+        "pack",
+        "store"
+      ]
+    },
+    "assembly_contact": {
+      "description": "Engage or disengage an object with a fixture, holder, socket, or support.",
+      "labels": [
+        "insert",
+        "install",
+        "attach",
+        "clamp",
+        "press",
+        "stuff",
+        "hang",
+        "remove",
+        "take out",
+        "pull"
+      ]
+    },
+    "articulated_mechanism": {
+      "description": "Operate a rigid articulated, rotational, fastening, locking, or closure mechanism.",
+      "labels": [
+        "open",
+        "close",
+        "turn",
+        "rotate",
+        "lock",
+        "unlock",
+        "screw",
+        "unscrew",
+        "zip",
+        "unzip"
+      ]
+    },
+    "deformable_manipulation": {
+      "description": "Change the shape or arrangement of a deformable object.",
+      "labels": [
+        "fold",
+        "unfold",
+        "smooth",
+        "flatten",
+        "wrap",
+        "roll",
+        "cross",
+        "straighten",
+        "tie",
+        "untie",
+        "expand"
+      ]
+    },
+    "tool_material_operation": {
+      "description": "Use a tool or manipulate loose material through a task-specific operation.",
+      "labels": [
+        "cut",
+        "trim",
+        "sweep",
+        "scoop",
+        "pour",
+        "dump",
+        "write"
+      ]
+    },
+    "correction_failure_control": {
+      "description": "Correct, recover from, or reset an unsuccessful or off-nominal execution.",
+      "labels": [
+        "adjust",
+        "mistake",
+        "reset"
+      ]
+    }
+  }
+}

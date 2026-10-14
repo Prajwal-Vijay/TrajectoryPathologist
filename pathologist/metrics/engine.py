@@ -34,6 +34,7 @@ from pathologist.metrics.signals import (
 from pathologist.metrics.surprise import ECODSurpriseScorer
 from pathologist.metrics.timing import TimestampRegularityMetric
 from pathologist.metrics.vision import VisualFlowMetric
+from pathologist.metrics.vlm_yesno import CachedVLMYesNoMetric
 from pathologist.schemas.metrics import MetricProfile
 from pathologist.schemas.trajectory_bundle import TrajectoryBundle
 
@@ -90,7 +91,23 @@ class MetricEngine:
             max_events_per_metric=max_events_per_metric,
             config=self.config,
         )
-        results = [metric.compute(context) for metric in self.metrics]
+        metric_computers = list(self.metrics)
+        vlm_config = self.config.get("vlm_yesno")
+        configured_vlm_name = (
+            str(vlm_config.get("metric_name", CachedVLMYesNoMetric.name))
+            if isinstance(vlm_config, dict)
+            else CachedVLMYesNoMetric.name
+        )
+        if (
+            isinstance(vlm_config, dict)
+            and vlm_config.get("cache_root")
+            and not any(
+                metric.name == configured_vlm_name
+                for metric in metric_computers
+            )
+        ):
+            metric_computers.append(CachedVLMYesNoMetric(configured_vlm_name))
+        results = [metric.compute(context) for metric in metric_computers]
         global_events = []
         for result in results:
             global_events.extend(result.events)

@@ -37,10 +37,15 @@ fi
   huggingface_hub \
   mcap \
   mcap-protobuf-support \
+  matplotlib \
   numpy \
   opencv-python-headless \
   pytest \
   qwen-vl-utils==0.0.14
+"$ENV_PREFIX/bin/python" -m pip install \
+  flash-attn==2.8.3 \
+  einops \
+  --no-build-isolation
 
 if [[ ! -f "$MODEL_DIR/config.json" ]]; then
   "$ENV_PREFIX/bin/python" - "$MODEL_DIR" <<'PY'

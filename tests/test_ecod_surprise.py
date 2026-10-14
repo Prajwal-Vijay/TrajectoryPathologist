@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import math
+import random
 
-from pathologist.metrics.surprise import ECODSurpriseScorer, ecod_scores
+from pathologist.metrics.surprise import (
+    ECODSurpriseScorer,
+    _align_scalar_metric_samples,
+    _nearest_sample_indices,
+    ecod_scores,
+)
 from pathologist.schemas import MetricProfile, MetricResult, MetricSample
 
 
@@ -263,6 +269,174 @@ def test_eef_metrics_only_override_stalling_tail_direction() -> None:
         assert score_by_name[f"{metric_name}_ecod_score"].metadata[
             "score_tail_mode"
         ] == "left"
+
+
+def test_alignment_searchsorted_matches_original_nearest_index_rule() -> None:
+    rng = random.Random(0)
+    for _ in range(20):
+        metric_times = sorted(rng.uniform(0.0, 20.0) for _ in range(100))
+        anchor_times = [rng.uniform(0.0, 20.0) for _ in range(200)]
+        expected = [
+            min(
+                range(len(metric_times)),
+                key=lambda index: abs(metric_times[index] - timestamp),
+            )
+            for timestamp in anchor_times
+        ]
+        assert _nearest_sample_indices(anchor_times, metric_times) == expected
+
+    assert _nearest_sample_indices([1.0], [0.0, 2.0]) == [0]
+    assert _nearest_sample_indices([1.0], [2.0, 0.0]) == [0]
+    assert _nearest_sample_indices([1.0], [0.0, 2.0, 2.0]) == [0]
+
+
+def test_alignment_uses_densest_available_metric_grid() -> None:
+    sparse = MetricResult(
+        name="sparse_first",
+        description="Sparse source listed first",
+        samples=[
+            MetricSample(timestamp_sec=0.0, value=1.0),
+            MetricSample(timestamp_sec=1.0, value=2.0),
+        ],
+    )
+    dense = MetricResult(
+        name="dense_second",
+        description="Dense source listed second",
+        samples=[
+            MetricSample(timestamp_sec=0.0, value=10.0),
+            MetricSample(timestamp_sec=0.25, value=20.0),
+            MetricSample(timestamp_sec=0.5, value=30.0),
+            MetricSample(timestamp_sec=0.75, value=40.0),
+            MetricSample(timestamp_sec=1.0, value=50.0),
+        ],
+    )
+
+    aligned = _align_scalar_metric_samples([sparse, dense])
+
+    assert aligned["timestamps"] == [0.0, 0.25, 0.5, 0.75, 1.0]
+    assert aligned["alignment"]["method"] == (
+        "nearest_timestamp_to_densest_metric_grid"
+    )
+    assert aligned["alignment"]["anchor_metric_name"] == "dense_second"
+    assert aligned["feature_values"][0] == [1.0, 1.0, 1.0, 2.0, 2.0]
+
+
+def test_single_source_metric_builds_available_aggregate() -> None:
+    aggregate = ECODSurpriseScorer(
+        config={"surprise": {"source_metrics": ["visual_flow"]}}
+    ).score_aggregate_metric(
+        MetricProfile(bundle_id="single", metrics=[_metric("visual_flow")])
+    )
+
+    assert aggregate is not None
+    assert aggregate.metadata["available"] is True
+    assert aggregate.metadata["source_metric_names"] == ["visual_flow"]
+    assert len(aggregate.samples) == 3
+
+
+def test_group_aggregation_means_within_and_sums_across_groups() -> None:
+    profile = MetricProfile(
+        bundle_id="groups",
+        metrics=[
+            _metric("action_discontinuity"),
+            MetricResult(
+                name="motion_smoothness",
+                description="motion source",
+                samples=[
+                    MetricSample(timestamp_sec=0.0, value=3.0),
+                    MetricSample(timestamp_sec=0.1, value=1.0),
+                    MetricSample(timestamp_sec=0.2, value=2.0),
+                ],
+            ),
+            MetricResult(
+                name="vlm_insert_remove_margin",
+                description="vlm source",
+                samples=[
+                    MetricSample(timestamp_sec=0.0, value=-4.0),
+                    MetricSample(timestamp_sec=0.1, value=2.0),
+                    MetricSample(timestamp_sec=0.2, value=-1.0),
+                ],
+            ),
+        ],
+    )
+    aggregate = ECODSurpriseScorer(
+        config={
+            "surprise": {
+                "source_metrics": [
+                    "action_discontinuity",
+                    "motion_smoothness",
+                    "vlm_insert_remove_margin",
+                ],
+                "score_tail_overrides": {
+                    "vlm_insert_remove_margin": "right"
+                },
+                "aggregation_groups": {
+                    "telemetry": [
+                        "action_discontinuity",
+                        "motion_smoothness",
+                    ],
+                    "vlm": ["vlm_insert_remove_margin"],
+                },
+                "within_group_reduction": "mean",
+                "across_group_reduction": "sum",
+            }
+        }
+    ).score_aggregate_metric(profile)
+
+    assert aggregate is not None
+    metadata = aggregate.metadata
+    assert metadata["aggregation_groups"] == {
+        "telemetry": ["action_discontinuity", "motion_smoothness"],
+        "vlm": ["vlm_insert_remove_margin"],
+    }
+    assert metadata["within_group_reduction"] == "mean"
+    assert metadata["across_group_reduction"] == "sum"
+    for index in range(3):
+        expected_telemetry = sum(
+            metadata["feature_left_tail_scores"][name][index]
+            for name in ("action_discontinuity", "motion_smoothness")
+        ) / 2
+        expected = (
+            expected_telemetry
+            + metadata["feature_left_tail_scores"][
+                "vlm_insert_remove_margin"
+            ][index]
+        )
+        assert metadata["aggregate_left_tail_scores"][index] == expected
+
+
+def test_absent_groups_preserve_legacy_sum_aggregate() -> None:
+    metric_names = [
+        "action_discontinuity",
+        "motion_smoothness",
+        "eef_translational_stalling",
+        "eef_rotational_stalling",
+        "eef_translational_jerk",
+        "eef_angular_jerk",
+    ]
+    aggregate = ECODSurpriseScorer(
+        config={
+            "surprise": {
+                "source_metrics": metric_names,
+                "aggregation_reduction": "sum",
+            }
+        }
+    ).score_aggregate_metric(
+        MetricProfile(
+            bundle_id="legacy",
+            metrics=[_metric(name) for name in metric_names],
+        )
+    )
+
+    assert aggregate is not None
+    assert "aggregation_groups" not in aggregate.metadata
+    for branch in ("left", "right", "skew"):
+        feature_scores = aggregate.metadata[f"feature_{branch}_tail_scores"]
+        expected = [
+            sum(feature_scores[name][index] for name in metric_names)
+            for index in range(3)
+        ]
+        assert aggregate.metadata[f"aggregate_{branch}_tail_scores"] == expected
 
 
 def _metric(name: str) -> MetricResult:

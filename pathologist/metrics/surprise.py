@@ -7,6 +7,8 @@ from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 from pathologist.metrics.helpers import summarize
 from pathologist.schemas.metrics import MetricProfile, MetricResult, MetricSample
 
@@ -55,6 +57,26 @@ class ECODSurpriseScorer:
             raise ValueError(
                 "surprise.aggregation_reduction must be either 'sum' or 'max'"
             )
+        raw_groups = self.surprise_config.get("aggregation_groups")
+        self.aggregation_groups = (
+            _parse_aggregation_groups(raw_groups)
+            if isinstance(raw_groups, dict)
+            else None
+        )
+        self.within_group_reduction = str(
+            self.surprise_config.get("within_group_reduction", "mean")
+        ).strip().lower()
+        self.across_group_reduction = str(
+            self.surprise_config.get("across_group_reduction", "sum")
+        ).strip().lower()
+        for name, reduction_name in (
+            ("within_group_reduction", self.within_group_reduction),
+            ("across_group_reduction", self.across_group_reduction),
+        ):
+            if reduction_name not in {"mean", "sum", "max"}:
+                raise ValueError(
+                    f"surprise.{name} must be one of: mean, sum, max"
+                )
         source_metrics = self.surprise_config.get("source_metrics", DEFAULT_SURPRISE_SOURCE_METRICS)
         self.source_metrics = [
             str(metric_name)
@@ -221,7 +243,7 @@ class ECODSurpriseScorer:
             for metric in profile.metrics
             if metric.name == metric_name and _scalar_samples(metric)
         ]
-        if len(source_metrics) < 2:
+        if len(source_metrics) < 1:
             return MetricResult(
                 name=self.aggregate_metric_name,
                 description="Aggregate ECOD-style surprise score across configured source metrics.",
@@ -230,7 +252,7 @@ class ECODSurpriseScorer:
                 display_hint="ecod_aggregate_surprise_timeseries",
                 metadata={
                     "available": False,
-                    "unavailable_reason": "requires at least two source metrics with scalar samples",
+                    "unavailable_reason": "requires at least one source metric with scalar samples",
                     "source_metric_names": [metric.name for metric in source_metrics],
                 },
             )
@@ -292,28 +314,87 @@ class ECODSurpriseScorer:
             per_feature_scores.append(
                 _scores_for_aggregate_tail_mode(scores, score_tail_mode)
             )
-        reduction = sum if self.aggregation_reduction == "sum" else max
-        aggregate_left_scores = [
-            reduction(
-                feature_score.left_tail_scores[index]
-                for feature_score in per_feature_scores
+        group_metadata: dict[str, Any] = {}
+        if self.aggregation_groups is None:
+            reduction = sum if self.aggregation_reduction == "sum" else max
+            aggregate_left_scores = [
+                reduction(
+                    feature_score.left_tail_scores[index]
+                    for feature_score in per_feature_scores
+                )
+                for index in range(len(aligned["timestamps"]))
+            ]
+            aggregate_right_scores = [
+                reduction(
+                    feature_score.right_tail_scores[index]
+                    for feature_score in per_feature_scores
+                )
+                for index in range(len(aligned["timestamps"]))
+            ]
+            aggregate_skew_scores = [
+                reduction(
+                    feature_score.skew_tail_scores[index]
+                    for feature_score in per_feature_scores
+                )
+                for index in range(len(aligned["timestamps"]))
+            ]
+            score_formula = (
+                "O_i=max(max_j U_l_ij, max_j U_r_ij, max_j U_skew_ij)"
+                if self.aggregation_reduction == "max"
+                else "O_i=max(sum_j U_l_ij, sum_j U_r_ij, sum_j U_skew_ij)"
             )
-            for index in range(len(aligned["timestamps"]))
-        ]
-        aggregate_right_scores = [
-            reduction(
-                feature_score.right_tail_scores[index]
-                for feature_score in per_feature_scores
+        else:
+            scores_by_metric = dict(
+                zip(aligned["metric_names"], per_feature_scores)
             )
-            for index in range(len(aligned["timestamps"]))
-        ]
-        aggregate_skew_scores = [
-            reduction(
-                feature_score.skew_tail_scores[index]
-                for feature_score in per_feature_scores
+            active_groups = _active_aggregation_groups(
+                aligned["metric_names"],
+                self.aggregation_groups,
             )
-            for index in range(len(aligned["timestamps"]))
-        ]
+            group_left_scores = _group_branch_scores(
+                scores_by_metric,
+                active_groups,
+                branch="left_tail_scores",
+                reduction=self.within_group_reduction,
+            )
+            group_right_scores = _group_branch_scores(
+                scores_by_metric,
+                active_groups,
+                branch="right_tail_scores",
+                reduction=self.within_group_reduction,
+            )
+            group_skew_scores = _group_branch_scores(
+                scores_by_metric,
+                active_groups,
+                branch="skew_tail_scores",
+                reduction=self.within_group_reduction,
+            )
+            aggregate_left_scores = _reduce_group_branches(
+                group_left_scores,
+                self.across_group_reduction,
+            )
+            aggregate_right_scores = _reduce_group_branches(
+                group_right_scores,
+                self.across_group_reduction,
+            )
+            aggregate_skew_scores = _reduce_group_branches(
+                group_skew_scores,
+                self.across_group_reduction,
+            )
+            score_formula = (
+                "O_i=max(reduce_across_g(reduce_within_g(U_l_ij)), "
+                "reduce_across_g(reduce_within_g(U_r_ij)), "
+                "reduce_across_g(reduce_within_g(U_skew_ij)))"
+            )
+            group_metadata = {
+                "aggregation_groups": active_groups,
+                "configured_aggregation_groups": self.aggregation_groups,
+                "within_group_reduction": self.within_group_reduction,
+                "across_group_reduction": self.across_group_reduction,
+                "group_left_tail_scores": group_left_scores,
+                "group_right_tail_scores": group_right_scores,
+                "group_skew_tail_scores": group_skew_scores,
+            }
         aggregate_scores = [
             max(left_score, right_score, skew_score)
             for left_score, right_score, skew_score in zip(
@@ -340,12 +421,9 @@ class ECODSurpriseScorer:
             metadata={
                 "available": True,
                 "source_metric_names": aligned["metric_names"],
-                "score_formula": (
-                    "O_i=max(max_j U_l_ij, max_j U_r_ij, max_j U_skew_ij)"
-                    if self.aggregation_reduction == "max"
-                    else "O_i=max(sum_j U_l_ij, sum_j U_r_ij, sum_j U_skew_ij)"
-                ),
+                "score_formula": score_formula,
                 "aggregation_reduction": self.aggregation_reduction,
+                **group_metadata,
                 "alignment": aligned["alignment"],
                 "epsilon": self.epsilon,
                 "aggregate_left_tail_scores": aggregate_left_scores,
@@ -534,15 +612,18 @@ def _empirical_cdf(values: list[float]) -> list[float]:
 
 
 def _align_scalar_metric_samples(metrics: list[MetricResult]) -> dict[str, Any]:
-    """Align scalar metric samples onto the first metric's timestamp grid."""
+    """Align scalar metric samples onto the densest available timestamp grid."""
 
-    anchor_metric = metrics[0]
+    # Preserve source-metric order as the deterministic tie-breaker. Choosing the
+    # metric with the most samples prevents a coarse source (for example, a 1 Hz
+    # cached VLM score) from reducing an otherwise high-rate aggregate timeline.
+    anchor_metric = max(metrics, key=lambda metric: len(_scalar_samples(metric)))
     anchor_samples = _scalar_samples(anchor_metric)
     timestamps = [sample.timestamp_sec for sample in anchor_samples]
     feature_values: list[list[float]] = []
     feature_sample_indices: list[list[int]] = []
     alignment: dict[str, Any] = {
-        "method": "nearest_timestamp_to_first_metric_grid",
+        "method": "nearest_timestamp_to_densest_metric_grid",
         "anchor_metric_name": anchor_metric.name,
         "anchor_timestamp_count": len(timestamps),
         "per_metric_max_abs_time_delta_sec": {},
@@ -552,17 +633,15 @@ def _align_scalar_metric_samples(metrics: list[MetricResult]) -> dict[str, Any]:
         samples = _scalar_samples(metric)
         metric_times = [sample.timestamp_sec for sample in samples]
         metric_values = [float(sample.value) for sample in samples]
-        aligned_values = []
-        nearest_indices = []
-        max_abs_delta = 0.0
-        for timestamp in timestamps:
-            nearest_index = min(
-                range(len(metric_times)),
-                key=lambda index: abs(metric_times[index] - timestamp),
-            )
-            max_abs_delta = max(max_abs_delta, abs(metric_times[nearest_index] - timestamp))
-            aligned_values.append(metric_values[nearest_index])
-            nearest_indices.append(nearest_index)
+        nearest_indices = _nearest_sample_indices(timestamps, metric_times)
+        aligned_values = [metric_values[index] for index in nearest_indices]
+        max_abs_delta = max(
+            (
+                abs(metric_times[index] - timestamp)
+                for timestamp, index in zip(timestamps, nearest_indices)
+            ),
+            default=0.0,
+        )
         feature_values.append(aligned_values)
         feature_sample_indices.append(nearest_indices)
         alignment["per_metric_max_abs_time_delta_sec"][metric.name] = max_abs_delta
@@ -574,6 +653,117 @@ def _align_scalar_metric_samples(metrics: list[MetricResult]) -> dict[str, Any]:
         "feature_sample_indices": feature_sample_indices,
         "alignment": alignment,
     }
+
+
+def _nearest_sample_indices(
+    anchor_times: list[float],
+    metric_times: list[float],
+) -> list[int]:
+    """Vectorized nearest indices with the original lower-index tie rule."""
+
+    if not metric_times:
+        return []
+    times = np.asarray(metric_times, dtype=np.float64)
+    anchors = np.asarray(anchor_times, dtype=np.float64)
+    order = np.argsort(times, kind="stable")
+    sorted_times = times[order]
+    insertion = np.searchsorted(sorted_times, anchors, side="left")
+    left_positions = np.clip(insertion - 1, 0, len(sorted_times) - 1)
+    right_positions = np.clip(insertion, 0, len(sorted_times) - 1)
+    left_indices = order[left_positions]
+    right_indices = order[right_positions]
+    left_delta = np.abs(times[left_indices] - anchors)
+    right_delta = np.abs(times[right_indices] - anchors)
+    choose_right = (right_delta < left_delta) | (
+        (right_delta == left_delta) & (right_indices < left_indices)
+    )
+    return np.where(choose_right, right_indices, left_indices).astype(int).tolist()
+
+
+def _parse_aggregation_groups(value: dict[Any, Any]) -> dict[str, list[str]]:
+    groups: dict[str, list[str]] = {}
+    for raw_name, raw_metrics in value.items():
+        if not isinstance(raw_name, str) or not isinstance(raw_metrics, (list, tuple)):
+            continue
+        metrics = [
+            str(metric_name)
+            for metric_name in raw_metrics
+            if isinstance(metric_name, str)
+        ]
+        if metrics:
+            groups[raw_name] = metrics
+    return groups
+
+
+def _active_aggregation_groups(
+    metric_names: list[str],
+    configured_groups: dict[str, list[str]],
+) -> dict[str, list[str]]:
+    """Resolve configured groups and add singleton groups for unlisted metrics."""
+
+    active: dict[str, list[str]] = {}
+    claimed: set[str] = set()
+    available = set(metric_names)
+    for group_name, configured_names in configured_groups.items():
+        members = [
+            name
+            for name in configured_names
+            if name in available and name not in claimed
+        ]
+        if members:
+            active[group_name] = members
+            claimed.update(members)
+    for metric_name in metric_names:
+        if metric_name not in claimed:
+            group_name = metric_name
+            suffix = 2
+            while group_name in active:
+                group_name = f"{metric_name}_{suffix}"
+                suffix += 1
+            active[group_name] = [metric_name]
+    return active
+
+
+def _group_branch_scores(
+    scores_by_metric: dict[str, ECODScoreResult],
+    groups: dict[str, list[str]],
+    *,
+    branch: str,
+    reduction: str,
+) -> dict[str, list[float]]:
+    output: dict[str, list[float]] = {}
+    for group_name, metric_names in groups.items():
+        branches = [
+            getattr(scores_by_metric[metric_name], branch)
+            for metric_name in metric_names
+        ]
+        output[group_name] = [
+            _reduce_values(
+                [values[index] for values in branches],
+                reduction,
+            )
+            for index in range(len(branches[0]))
+        ]
+    return output
+
+
+def _reduce_group_branches(
+    group_scores: dict[str, list[float]],
+    reduction: str,
+) -> list[float]:
+    branches = list(group_scores.values())
+    return [
+        _reduce_values([values[index] for values in branches], reduction)
+        for index in range(len(branches[0]))
+    ]
+
+
+def _reduce_values(values: list[float], reduction: str) -> float:
+    if reduction == "mean":
+        return sum(values) / len(values)
+    if reduction == "max":
+        return max(values)
+    return sum(values)
 
 
 def _scalar_samples(metric: MetricResult) -> list[MetricSample]:

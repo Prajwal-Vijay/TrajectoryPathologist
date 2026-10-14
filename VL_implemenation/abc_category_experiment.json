@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "prompt_template": "Does this clip show the following type of robot action: {type}? Examples include: {examples}. Answer Yes or No.",
+  "scan": {
+    "frame_rate": 5.0,
+    "window_sec": 2.0,
+    "stride_sec": 1.0,
+    "panel_width": 320,
+    "panel_height": 256,
+    "batch_size": 32,
+    "jpeg_workers": 12,
+    "queue_depth": 2
+  },
+  "visual_flow": {
+    "camera_names": [
+      "top",
+      "left_wrist",
+      "right_wrist"
+    ],
+    "frame_stride": 2,
+    "resize": [
+      128,
+      128
+    ],
+    "spatial_aggregation": "mean",
+    "robot_masking": {
+      "enabled": false
+    }
+  },
+  "aggregation": {
+    "within_telemetry_reduction": "mean",
+    "across_group_reduction": "sum",
+    "vlm_tail": "right"
+  },
+  "persistence": {
+    "aggregate_metric_name": "ecod_aggregate_score",
+    "smoothing_window": 10,
+    "gamma": 0.5,
+    "ranking": "persistence",
+    "max_proposals": 5
+  },
+  "fv_action": {
+    "candidate_count": 3,
+    "fine_count": 8,
+    "radius_sec": 8.0,
+    "alpha": 0.5
+  },
+  "evaluation": {
+    "bootstrap_samples": 1000,
+    "seed": 0,
+    "hit_at": [
+      1,
+      3,
+      5
+    ]
+  },
+  "categories": {
+    "acquire_release": {
+      "type": "acquiring or releasing an object",
+      "examples": [
+        "pick up",
+        "grab",
+        "grap",
+        "grasp",
+        "hold",
+        "lift",
+        "place",
+        "put",
+        "set",
+        "release"
+      ],
+      "telemetry_metrics": [
+        "gripper_transition",
+        "gripper_aperture_speed",
+        "eef_translational_stalling",
+        "eef_linear_velocity_spike",
+        "eef_translational_jerk",
+        "action_discontinuity"
+      ]
+    },
+    "transport_reposition": {
+      "type": "transporting or repositioning an object",
+      "examples": [
+        "move",
+        "position",
+        "reach",
+        "pass/handoff",
+        "pass",
+        "arm",
+        "locate",
+        "load",
+        "unload",
+        "pack",
+        "store"
+      ],
+      "telemetry_metrics": [
+        "eef_linear_velocity_spike",
+        "velocity_spike",
+        "motion_smoothness",
+        "eef_translational_jerk",
+        "action_discontinuity",
+        "visual_flow"
+      ]
+    },
+    "assembly_contact": {
+      "type": "assembly, contact, insertion, attachment, or removal",
+      "examples": [
+        "insert",
+        "install",
+        "attach",
+        "clamp",
+        "press",
+        "stuff",
+        "hang",
+        "remove",
+        "take out",
+        "pull"
+      ],
+      "telemetry_metrics": [
+        "action_discontinuity",
+        "motion_smoothness",
+        "eef_translational_stalling",
+        "eef_rotational_stalling",
+        "eef_translational_jerk",
+        "eef_angular_jerk"
+      ]
+    },
+    "articulated_mechanism": {
+      "type": "operating an articulated or fastening mechanism",
+      "examples": [
+        "open",
+        "close",
+        "turn",
+        "rotate",
+        "lock",
+        "unlock",
+        "screw",
+        "unscrew",
+        "zip",
+        "unzip"
+      ],
+      "telemetry_metrics": [
+        "eef_angular_velocity_spike",
+        "eef_rotational_stalling",
+        "eef_angular_jerk",
+        "action_discontinuity",
+        "gripper_aperture_speed"
+      ]
+    },
+    "deformable_manipulation": {
+      "type": "manipulating or reshaping a deformable object",
+      "examples": [
+        "fold",
+        "unfold",
+        "smooth",
+        "flatten",
+        "wrap",
+        "roll",
+        "cross",
+        "straighten",
+        "tie",
+        "untie",
+        "expand"
+      ],
+      "telemetry_metrics": [
+        "visual_flow",
+        "motion_smoothness",
+        "eef_translational_jerk",
+        "eef_angular_jerk",
+        "gripper_aperture_speed",
+        "gripper_transition",
+        "action_discontinuity"
+      ]
+    },
+    "tool_material_operation": {
+      "type": "using a tool or manipulating loose material",
+      "examples": [
+        "cut",
+        "trim",
+        "sweep",
+        "scoop",
+        "pour",
+        "dump",
+        "write"
+      ],
+      "telemetry_metrics": [
+        "visual_flow",
+        "eef_linear_velocity_spike",
+        "eef_angular_velocity_spike",
+        "eef_translational_jerk",
+        "eef_angular_jerk",
+        "motion_smoothness",
+        "action_discontinuity",
+        "gripper_aperture_speed"
+      ]
+    },
+    "correction_failure_control": {
+      "type": "correcting, recovering from, or resetting an execution",
+      "examples": [
+        "adjust",
+        "mistake",
+        "reset"
+      ],
+      "telemetry_metrics": [
+        "action_discontinuity",
+        "motion_smoothness",
+        "velocity_spike",
+        "stalling",
+        "eef_linear_velocity_spike",
+        "eef_angular_velocity_spike",
+        "eef_translational_jerk",
+        "eef_angular_jerk",
+        "gripper_chatter",
+        "visual_flow"
+      ],
+      "secondary": true
+    }
+  }
+}

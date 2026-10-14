@@ -1,0 +1,28 @@
+{
+  "metrics": {
+    "action_discontinuity": {
+      "ignored_dimensions": []
+    }
+  },
+  "vlm_yesno": {
+    "cache_root": "/media/helen/8TB_VOL3/TrajectoryPathologist_VL/outputs/vlm_scores"
+  },
+  "selector": {
+    "surprise_flood": {
+      "aggregate_metric_name": "ecod_aggregate_score",
+      "smoothing_window": 10,
+      "gamma": 0.5,
+      "ranking": "persistence",
+      "max_proposals": 5
+    }
+  },
+  "surprise": {
+    "source_metrics": [
+      "vlm_insert_remove_margin"
+    ],
+    "aggregation_reduction": "sum",
+    "score_tail_overrides": {
+      "vlm_insert_remove_margin": "right"
+    }
+  }
+}
