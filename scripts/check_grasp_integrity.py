@@ -85,12 +85,26 @@ def main() -> None:
         **(user.get("vision") or {}),
     }
 
-    all_records = discover_abc130k_episodes(args.data_root)
+    data_root = Path(args.data_root).expanduser()
+    if not data_root.is_dir():
+        sys.exit(f"--data-root does not exist: {data_root}")
+    all_records = discover_abc130k_episodes(data_root)
+    if not all_records:
+        sys.exit(
+            f"No episodes under {data_root}: expected <task>/<episode>/episode.mcap "
+            "with annotation.mcap next to it."
+        )
+    print(
+        f"Found {len(all_records)} episodes "
+        f"({sum(1 for r in all_records if r.failed_segments)} with an annotated failure)."
+    )
     adapter = ABC130KBundleAdapter()
     if not (raw.get("vision") or {}).get("finger_calibration") and not (raw.get("vision") or {}).get("finger_masks"):
         raw["vision"]["finger_calibration"] = _calibrate(
             all_records, adapter, raw, output / "finger_calibration", frame_cache, args
         )
+        if not raw["vision"]["finger_calibration"]:
+            sys.exit("Finger calibration failed for every wrist camera; see the messages above.")
 
     records = [r for r in all_records if r.failed_segments]
     if args.bundle_id:
